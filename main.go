@@ -39,8 +39,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("не вдалося створити Telegram-бота: %v", err)
 	}
+	bot.Debug = cfg.TelegramDebug
 
-	log.Printf("бот %s успішно запущений", bot.Self.UserName)
+	log.Printf("бот @%s успішно авторизований", bot.Self.UserName)
 
 	h := handlers.New(bot, store)
 	u := tgbotapi.NewUpdate(0)
@@ -49,6 +50,8 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 	defer bot.StopReceivingUpdates()
 
+	log.Println("бот запущено, очікування повідомлень...")
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -56,12 +59,19 @@ func main() {
 			return
 		case update, ok := <-updates:
 			if !ok {
-				log.Println("канал оновлень закрито")
+				log.Println("канал оновлень закрито, завершення роботи")
 				return
 			}
-			if err := h.HandleUpdate(ctx, update); err != nil {
-				log.Printf("помилка обробки оновлення: %v", err)
-			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("[panic] відновлення після паніки при обробці оновлення: %v", r)
+					}
+				}()
+				if err := h.HandleUpdate(ctx, update); err != nil {
+					log.Printf("помилка обробки оновлення: %v", err)
+				}
+			}()
 		}
 	}
 }
