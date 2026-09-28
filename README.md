@@ -31,6 +31,9 @@ Telegram-бот для молодіжного кафе **JamHouse** у Мико�
 - `TELEGRAM_BOT_TOKEN` — **обов'язково**, токен Telegram-бота.
 - `DB_PATH` — необов'язково, шлях до SQLite-файлу. За замовчуванням: `data.db`.
 - `ADMIN_IDS` — список Telegram User ID адміністраторів через кому.
+- `TELEGRAM_DEBUG` — необов'язково, `true` для детального логування Telegram API. За замовчуванням: `false`.
+
+> ⚠️ **Ніколи не комітьте реальний токен бота у репозиторій** (у `.env.example`, `README` чи будь-якому іншому файлі). Якщо токен потрапив до репозиторію — одразу перевидайте його через @BotFather.
 
 ## 5. Як додати першого адміністратора
 
@@ -60,19 +63,66 @@ go mod tidy
 go run .
 ```
 
-## 7. Деплой на Railway / Render / Fly.io
+## 7. Деплой на Railway
 
 Бот працює через **long polling**, тому його слід запускати як **worker/background service**, а не як HTTP-вебсервіс. Також обов'язково використайте **persistent volume**, інакше файл `data.db` буде втрачатися між деплоями.
 
-### Railway
+> Railway **не читає файл `.env` автоматично** при Docker-деплої. Всі змінні необхідно додавати вручну у розділі **Variables** сервісу.
+
+### Кроки деплою
 
 1. Створіть новий проєкт і підключіть репозиторій.
-2. Додайте змінні `TELEGRAM_BOT_TOKEN`, `ADMIN_IDS`, за потреби `DB_PATH`.
-3. Підключіть volume і змонтуйте його, наприклад, у `/data`.
-4. Вкажіть `DB_PATH=/data/data.db`.
-5. Запуск: `go run .` або попередньо зібраний бінарник.
+2. У розділі **Variables** додайте:
+   - `TELEGRAM_BOT_TOKEN` — токен від @BotFather (**обов'язково**)
+   - `ADMIN_IDS` — ваш Telegram User ID (через кому, якщо кілька)
+   - `DB_PATH=/app/data/data.db` — шлях до бази даних на volume
+   - `TELEGRAM_DEBUG=false` — можна поставити `true` для діагностики
+3. Підключіть **Railway Volume**:
+   - У налаштуваннях сервісу → **Volumes** → **Add Volume**
+   - Mount Path: `/app/data`
+4. Деплойте сервіс.
 
-### Render
+### Розгорнута схема Variables
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+ADMIN_IDS=123456789
+DB_PATH=/app/data/data.db
+TELEGRAM_DEBUG=false
+```
+
+### Де дивитись логи
+
+1. Відкрийте сервіс у Railway.
+2. Перейдіть у вкладку **Deployments** → обраний деплой → **Logs**.
+3. Шукайте рядки:
+   - `[config] DB_PATH=...` — конфіг завантажено
+   - `бот @YourBotName успішно авторизований` — з'єднання з Telegram OK
+   - `бот запущено, очікування повідомлень...` — polling активний
+4. Якщо контейнер завершується одразу (`exited`) — шукайте `FATAL` або `Config error` у логах.
+
+### Troubleshooting
+
+#### Помилка `TELEGRAM_BOT_TOKEN обов'язкова` при старті
+Railway не читає локальний `.env`. Переконайтеся, що `TELEGRAM_BOT_TOKEN` додано у розділ **Variables** сервісу і зробіть новий деплой.
+
+#### Контейнер завершується відразу після старту
+Перевірте логи деплою — там має бути рядок з причиною. Найчастіші причини: відсутній токен або невірний формат `ADMIN_IDS`.
+
+#### Бот не відповідає на `/start`
+1. Переконайтеся, що бот запущений (є рядок `бот запущено...` у логах).
+2. Переконайтеся, що ваш Telegram User ID є у `ADMIN_IDS`.  
+   Дізнатись свій ID: **@userinfobot** у Telegram.
+3. Пишіть боту **в особисті повідомлення**, не в групу.
+4. Перевірте, чи немає активного webhook у бота (long polling і webhook конфліктують):  
+   `https://api.telegram.org/bot<TOKEN>/getWebhookInfo`  
+   Якщо webhook активний — видаліть його:  
+   `https://api.telegram.org/bot<TOKEN>/deleteWebhook`
+
+#### Дані зникають після редеплою
+Переконайтесь, що підключений Railway Volume і `DB_PATH` вказує на директорію всередині нього (наприклад `/app/data/data.db`).
+
+### Деплой на Render / Fly.io
 
 1. Створіть **Background Worker**.
 2. Підключіть репозиторій.

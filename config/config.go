@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -13,14 +14,19 @@ type Config struct {
 	TelegramBotToken string
 	DBPath           string
 	AdminIDs         []int64
+	TelegramDebug    bool
 }
 
 func Load() (Config, error) {
-	_ = godotenv.Load()
+	// Load .env if present (local development). Ignored in production / Railway.
+	if err := godotenv.Load(); err == nil {
+		log.Println("[config] завантажено .env файл")
+	}
 
 	cfg := Config{
 		TelegramBotToken: strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		DBPath:           strings.TrimSpace(os.Getenv("DB_PATH")),
+		TelegramDebug:    strings.ToLower(strings.TrimSpace(os.Getenv("TELEGRAM_DEBUG"))) == "true",
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "data.db"
@@ -33,6 +39,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.AdminIDs = adminIDs
+
+	// Log startup summary without secrets.
+	log.Printf("[config] DB_PATH=%s ADMIN_IDS_COUNT=%d TELEGRAM_DEBUG=%v",
+		cfg.DBPath, len(cfg.AdminIDs), cfg.TelegramDebug)
+
 	return cfg, nil
 }
 
