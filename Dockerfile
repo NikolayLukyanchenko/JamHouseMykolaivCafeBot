@@ -6,12 +6,14 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o bot .
+RUN chmod +x /app/bot
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=builder /app/bot /app/bot
+RUN chmod +x /app/bot
 
 ENV TZ=Europe/Kyiv
 CMD ["/app/bot"]
