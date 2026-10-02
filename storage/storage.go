@@ -73,6 +73,12 @@ cost_price REAL NOT NULL,
 FOREIGN KEY(sale_id) REFERENCES sales(id),
 FOREIGN KEY(product_id) REFERENCES products(id)
 );`,
+		`CREATE TABLE IF NOT EXISTS purchase_items (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+unit TEXT NOT NULL DEFAULT '',
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -361,6 +367,54 @@ ORDER BY si.name
 		report.Items = append(report.Items, item)
 	}
 	return report, rows.Err()
+}
+
+func (s *Storage) CreatePurchaseItem(ctx context.Context, name, unit string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO purchase_items (name, unit) VALUES (?, ?)`, name, unit)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Storage) GetPurchaseItem(ctx context.Context, itemID int64) (models.PurchaseItem, error) {
+	var item models.PurchaseItem
+	var createdAt string
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, unit, created_at FROM purchase_items WHERE id = ?`, itemID)
+	if err := row.Scan(&item.ID, &item.Name, &item.Unit, &createdAt); err != nil {
+		return models.PurchaseItem{}, err
+	}
+	item.CreatedAt = parseDBTime(createdAt)
+	return item, nil
+}
+
+func (s *Storage) ListPurchaseItems(ctx context.Context) ([]models.PurchaseItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, unit, created_at FROM purchase_items ORDER BY name COLLATE NOCASE, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []models.PurchaseItem
+	for rows.Next() {
+		var item models.PurchaseItem
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.Name, &item.Unit, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = parseDBTime(createdAt)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Storage) UpdatePurchaseItem(ctx context.Context, itemID int64, name, unit string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE purchase_items SET name = ?, unit = ? WHERE id = ?`, name, unit, itemID)
+	return err
+}
+
+func (s *Storage) DeletePurchaseItem(ctx context.Context, itemID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM purchase_items WHERE id = ?`, itemID)
+	return err
 }
 
 func scanProducts(rows *sql.Rows) ([]models.Product, error) {

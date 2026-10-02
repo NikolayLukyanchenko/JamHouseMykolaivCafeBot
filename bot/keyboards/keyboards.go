@@ -32,6 +32,7 @@ func AdminPanel() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("📦 Поповнити залишки", "admin:replenish_stock"),
 			tgbotapi.NewInlineKeyboardButtonData("📋 Список товарів", "admin:list_products"),
 		),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🛒 Позиції для закупки", "admin:pitems")),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
 	)
 }
@@ -105,6 +106,81 @@ func ReportPeriods() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("Вчора", "report:yesterday"),
 		),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
+	)
+}
+
+// Cancel is attached to every prompt that waits for typed input.
+func Cancel() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Скасувати", "nav:cancel")),
+	)
+}
+
+// PurchaseRequest renders the tap-to-select purchase list. Selected items get
+// ➖/➕ buttons around them to adjust the quantity.
+func PurchaseRequest(items []models.PurchaseItem, qty map[int64]int) tgbotapi.InlineKeyboardMarkup {
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(items)+3)
+	for _, item := range items {
+		id := int64ToString(item.ID)
+		n := qty[item.ID]
+		if n <= 0 {
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(item.Name, "pur:add:"+id)))
+			continue
+		}
+		label := fmt.Sprintf("✅ %s — %d", item.Name, n)
+		if item.Unit != "" {
+			label += " " + item.Unit
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➖", "pur:sub:"+id),
+			tgbotapi.NewInlineKeyboardButtonData(label, "pur:add:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("➕", "pur:add:"+id),
+		))
+	}
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📝 Додати коментар", "pur:comment")),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("❌ Скасувати", "pur:cancel"),
+			tgbotapi.NewInlineKeyboardButtonData("📤 Надіслати", "pur:send"),
+		),
+	)
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func PurchaseItemsAdmin(items []models.PurchaseItem) tgbotapi.InlineKeyboardMarkup {
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(items)+2)
+	for _, item := range items {
+		label := item.Name
+		if item.Unit != "" {
+			label += ", " + item.Unit
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(label, "admin:pitem:"+int64ToString(item.ID))))
+	}
+	rows = append(rows,
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Додати позиції", "admin:pitem_add")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
+	)
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func PurchaseItemCard(itemID int64) tgbotapi.InlineKeyboardMarkup {
+	id := int64ToString(itemID)
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Змінити", "admin:pitem_edit:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("🗑 Видалити", "admin:pitem_del:"+id),
+		),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До списку", "admin:pitems")),
+	)
+}
+
+func ConfirmDeletePurchaseItem(itemID int64) tgbotapi.InlineKeyboardMarkup {
+	id := int64ToString(itemID)
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Так, видалити", "admin:pitem_delok:"+id),
+			tgbotapi.NewInlineKeyboardButtonData("Ні", "admin:pitem:"+id),
+		),
 	)
 }
 
