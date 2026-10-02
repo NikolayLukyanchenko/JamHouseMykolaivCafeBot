@@ -114,3 +114,80 @@ func TestPurchaseItemsCRUD(t *testing.T) {
 		t.Fatalf("expected 1 item after delete, got %d", len(items))
 	}
 }
+
+func TestReportUsesLocalDayForUTCTimestamps(t *testing.T) {
+	kyiv, err := time.LoadLocation("Europe/Kyiv")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	prevLocal := time.Local
+	time.Local = kyiv
+	defer func() { time.Local = prevLocal }()
+
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	// 22:30 UTC on 1 Oct is 01:30 on 2 Oct in Kyiv.
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO sales (user_id, total, cost_total, payment_method, created_at) VALUES (1, 100, 40, 'cash', '2026-10-01 22:30:00')`); err != nil {
+		t.Fatal(err)
+	}
+
+	oct1, err := store.GetDailyReport(ctx, time.Date(2026, 10, 1, 12, 0, 0, 0, kyiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oct2, err := store.GetDailyReport(ctx, time.Date(2026, 10, 2, 12, 0, 0, 0, kyiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oct1.TotalRevenue != 0 || oct2.TotalRevenue != 100 {
+		t.Fatalf("sale must belong to 2 Oct Kyiv time: oct1=%v oct2=%v", oct1.TotalRevenue, oct2.TotalRevenue)
+	}
+
+	days, err := store.SalesDays(ctx, time.Date(2026, 10, 1, 0, 0, 0, 0, kyiv), time.Date(2026, 11, 1, 0, 0, 0, 0, kyiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !days["2026-10-02"] || days["2026-10-01"] {
+		t.Fatalf("unexpected sales days: %v", days)
+	}
+}
+
+func TestSettings(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := store.GetSetting(ctx, "k"); err != nil || v != "" {
+		t.Fatalf("unset key: %q %v", v, err)
+	}
+	if err := store.SetSetting(ctx, "k", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting(ctx, "k", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := store.GetSetting(ctx, "k"); v != "2" {
+		t.Fatalf("got %q", v)
+	}
+	if err := store.DeleteSetting(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := store.GetSetting(ctx, "k"); v != "" {
+		t.Fatalf("got %q after delete", v)
+	}
+}

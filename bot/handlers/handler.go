@@ -11,7 +11,6 @@ import (
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/bot/keyboards"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
-	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/reports"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/storage"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/utils"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -31,6 +30,13 @@ func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) erro
 	switch {
 	case update.CallbackQuery != nil:
 		return h.handleCallback(ctx, update.CallbackQuery)
+	case update.Message != nil && update.Message.Chat != nil && !update.Message.Chat.IsPrivate():
+		// In groups the bot only reacts to the command that binds the group
+		// for purchase requests; everything else there is ignored.
+		if update.Message.IsCommand() && update.Message.Command() == "purchase_here" {
+			return h.bindPurchaseChat(ctx, update.Message)
+		}
+		return nil
 	case update.Message != nil && update.Message.IsCommand():
 		return h.handleCommand(ctx, update.Message)
 	case update.Message != nil:
@@ -70,7 +76,7 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
 			return h.sendText(message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
 		}
-		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods())
+		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods(time.Now()))
 	default:
 		if !allowed {
 			return h.sendText(message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)
@@ -114,7 +120,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 		if !hasAnyRole(user.Role, models.RoleAdmin) {
 			return h.sendText(message.Chat.ID, "Кнопка звіту доступна лише адміністратору.", replyKeyboard(user.Role))
 		}
-		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods())
+		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods(time.Now()))
 	default:
 		return h.sendText(message.Chat.ID, "Не зрозумів повідомлення. Оберіть дію з меню нижче або скористайтеся /start.", replyKeyboard(user.Role))
 	}
@@ -266,6 +272,9 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	if callback == nil || callback.From == nil || callback.Message == nil {
 		return nil
 	}
+	if callback.Data == "noop" || !callback.Message.Chat.IsPrivate() {
+		return h.answerCallback(callback.ID, "")
+	}
 	user, allowed, err := h.authorize(ctx, callback.From)
 	if err != nil {
 		return err
@@ -291,7 +300,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	case data == "admin:panel":
 		h.sessions.ClearState(user.UserID)
 		return h.sendAdminPanel(callback.Message.Chat.ID)
-	case data == "admin:pitems", strings.HasPrefix(data, "admin:pitem"):
+	case data == "admin:pitems", data == "admin:pchat_unbind", strings.HasPrefix(data, "admin:pitem"):
 		return h.handlePurchaseItemsAdminCallback(ctx, user, callback.Message.Chat.ID, data)
 	case data == "admin:add_product":
 		h.sessions.ResetDraft(user.UserID)
@@ -399,10 +408,11 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s.SelectedProductID = productID
 		s.State = stateAwaitOrderQty
 		return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
-	case data == "report:today":
-		return h.sendDailyReport(ctx, callback.Message.Chat.ID, time.Now())
-	case data == "report:yesterday":
-		return h.sendDailyReport(ctx, callback.Message.Chat.ID, time.Now().AddDate(0, 0, -1))
+	case strings.HasPrefix(data, "report:"):
+		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
+			return h.sendText(callback.Message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
+		}
+		return h.handleReportCallback(ctx, callback.Message.Chat.ID, callback.Message.MessageID, data)
 	default:
 		return h.sendText(callback.Message.Chat.ID, "Невідома дія. Спробуйте ще раз з головного меню.", replyKeyboard(user.Role))
 	}
@@ -522,14 +532,6 @@ func (h *Handler) sendStocks(ctx context.Context, chatID int64, includeCost bool
 		builder.WriteString("\n")
 	}
 	return h.sendText(chatID, strings.TrimSpace(builder.String()), nil)
-}
-
-func (h *Handler) sendDailyReport(ctx context.Context, chatID int64, date time.Time) error {
-	report, err := h.storage.GetDailyReport(ctx, date)
-	if err != nil {
-		return err
-	}
-	return h.sendText(chatID, reports.FormatDailyReport(report), nil)
 }
 
 func (h *Handler) sendAdminProductPicker(ctx context.Context, chatID int64, replenish bool) error {

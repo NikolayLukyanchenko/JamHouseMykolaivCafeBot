@@ -147,26 +147,16 @@ func (h *Handler) sendPurchaseRequest(ctx context.Context, user models.User, cha
 	}
 	requestText := strings.TrimSpace(b.String())
 
-	admins, err := h.storage.ListAdmins(ctx)
+	delivered, failed, err := h.deliverPurchaseRequest(ctx, user, requestText)
 	if err != nil {
 		return err
 	}
-	if len(admins) == 0 {
-		return h.sendText(chatID, "⚠️ Заявку не надіслано: в базі немає жодного адміністратора. Перевірте змінну ADMIN_IDS.", nil)
-	}
-
-	var delivered, failed []string
-	for _, admin := range admins {
-		if err := h.sendText(admin.UserID, requestText, nil); err != nil {
-			log.Printf("не вдалося відправити заявку на закупку адміну %d: %v", admin.UserID, err)
-			failed = append(failed, fmt.Sprintf("• %s (ID %d): %s", admin.FullName, admin.UserID, deliveryErrorHint(err)))
-			continue
-		}
-		delivered = append(delivered, admin.FullName)
-	}
-
 	if len(delivered) == 0 {
-		return h.sendText(chatID, "⚠️ Заявку не вдалося доставити жодному адміністратору. Заявку збережено — спробуйте надіслати ще раз.\n\n"+strings.Join(failed, "\n"), nil)
+		text := "⚠️ Заявку не надіслано — її нікому доставити.\n\n" + h.purchaseSetupHint()
+		if len(failed) > 0 {
+			text = "⚠️ Заявку не вдалося доставити. Вона збережена — спробуйте надіслати ще раз.\n\n" + strings.Join(failed, "\n") + "\n\n" + h.purchaseSetupHint()
+		}
+		return h.sendText(chatID, text, nil)
 	}
 
 	h.sessions.ResetPurchase(user.UserID)
@@ -179,6 +169,98 @@ func (h *Handler) sendPurchaseRequest(ctx context.Context, user models.User, cha
 		result += "\n\n⚠️ Не доставлено:\n" + strings.Join(failed, "\n")
 	}
 	return h.sendText(chatID, result, replyKeyboard(user.Role))
+}
+
+const (
+	settingPurchaseChatID    = "purchase_chat_id"
+	settingPurchaseChatTitle = "purchase_chat_title"
+)
+
+func (h *Handler) purchaseSetupHint() string {
+	return fmt.Sprintf("Як налаштувати: створіть групу в Telegram (наприклад, «Закупка JamHouse»), додайте туди бота і надішліть у групі команду /purchase_here@%s — після цього всі заявки надходитимуть у цю групу.", h.bot.Self.UserName)
+}
+
+// purchaseChat returns the group bound for purchase requests, or 0.
+func (h *Handler) purchaseChat(ctx context.Context) (int64, string, error) {
+	raw, err := h.storage.GetSetting(ctx, settingPurchaseChatID)
+	if err != nil || raw == "" {
+		return 0, "", err
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, "", nil
+	}
+	title, err := h.storage.GetSetting(ctx, settingPurchaseChatTitle)
+	return id, title, err
+}
+
+// deliverPurchaseRequest sends the request to the bound group. Without a
+// group, or when the group is unreachable, it falls back to the other admins.
+func (h *Handler) deliverPurchaseRequest(ctx context.Context, user models.User, text string) (delivered, failed []string, err error) {
+	groupID, groupTitle, err := h.purchaseChat(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if groupID != 0 {
+		sendErr := h.sendText(groupID, text, nil)
+		var tgErr *tgbotapi.Error
+		if errors.As(sendErr, &tgErr) && tgErr.MigrateToChatID != 0 {
+			// The group became a supergroup and got a new ID.
+			groupID = tgErr.MigrateToChatID
+			if err := h.storage.SetSetting(ctx, settingPurchaseChatID, strconv.FormatInt(groupID, 10)); err != nil {
+				log.Printf("не вдалося оновити ID групи закупки: %v", err)
+			}
+			sendErr = h.sendText(groupID, text, nil)
+		}
+		if sendErr == nil {
+			return []string{"група «" + groupTitle + "»"}, nil, nil
+		}
+		log.Printf("не вдалося відправити заявку в групу %d: %v", groupID, sendErr)
+		failed = append(failed, fmt.Sprintf("• група «%s»: %s", groupTitle, deliveryErrorHint(sendErr)))
+	}
+
+	admins, err := h.storage.ListAdmins(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, admin := range admins {
+		if admin.UserID == user.UserID {
+			continue
+		}
+		if err := h.sendText(admin.UserID, text, nil); err != nil {
+			log.Printf("не вдалося відправити заявку на закупку адміну %d: %v", admin.UserID, err)
+			failed = append(failed, fmt.Sprintf("• %s (ID %d): %s", admin.FullName, admin.UserID, deliveryErrorHint(err)))
+			continue
+		}
+		delivered = append(delivered, admin.FullName)
+	}
+	return delivered, failed, nil
+}
+
+// bindPurchaseChat handles /purchase_here sent in a group by an admin.
+func (h *Handler) bindPurchaseChat(ctx context.Context, message *tgbotapi.Message) error {
+	user, allowed, err := h.authorize(ctx, message.From)
+	if err != nil {
+		return err
+	}
+	if !allowed || !hasAnyRole(user.Role, models.RoleAdmin) {
+		return h.sendText(message.Chat.ID, "Налаштувати групу для заявок може лише адміністратор бота.", nil)
+	}
+	if err := h.storage.SetSetting(ctx, settingPurchaseChatID, strconv.FormatInt(message.Chat.ID, 10)); err != nil {
+		return err
+	}
+	if err := h.storage.SetSetting(ctx, settingPurchaseChatTitle, message.Chat.Title); err != nil {
+		return err
+	}
+	log.Printf("група для заявок на закупку: %d (%s), налаштував %d", message.Chat.ID, message.Chat.Title, user.UserID)
+	return h.sendText(message.Chat.ID, "✅ Готово! Заявки на закупку тепер надходитимуть у цю групу.", nil)
+}
+
+func (h *Handler) unbindPurchaseChat(ctx context.Context) error {
+	if err := h.storage.DeleteSetting(ctx, settingPurchaseChatID); err != nil {
+		return err
+	}
+	return h.storage.DeleteSetting(ctx, settingPurchaseChatTitle)
 }
 
 // deliveryErrorHint turns common Telegram send errors into an actionable hint.
@@ -201,14 +283,23 @@ func (h *Handler) sendPurchaseItemsAdmin(ctx context.Context, chatID int64, noti
 	if err != nil {
 		return err
 	}
+	groupID, groupTitle, err := h.purchaseChat(ctx)
+	if err != nil {
+		return err
+	}
 	text := "🛒 Позиції для закупки\n\nЦі позиції працівники обирають кнопками у «Замовити закупку». Натисніть на позицію, щоб змінити або видалити її."
 	if len(items) == 0 {
 		text = "🛒 Позиції для закупки\n\nСписок порожній. Натисніть «➕ Додати позиції»."
 	}
+	if groupID != 0 {
+		text += "\n\n📨 Заявки надходять у групу «" + groupTitle + "»."
+	} else {
+		text += "\n\n📨 Група для заявок не налаштована — заявки отримують інші адміністратори.\n" + h.purchaseSetupHint()
+	}
 	if notice != "" {
 		text = "✅ " + notice + "\n\n" + text
 	}
-	markup := keyboards.PurchaseItemsAdmin(items)
+	markup := keyboards.PurchaseItemsAdmin(items, groupID != 0)
 	return h.sendText(chatID, text, &markup)
 }
 
@@ -235,6 +326,11 @@ func (h *Handler) handlePurchaseItemsAdminCallback(ctx context.Context, user mod
 	case data == "admin:pitems":
 		h.sessions.ClearState(user.UserID)
 		return h.sendPurchaseItemsAdmin(ctx, chatID, "")
+	case data == "admin:pchat_unbind":
+		if err := h.unbindPurchaseChat(ctx); err != nil {
+			return err
+		}
+		return h.sendPurchaseItemsAdmin(ctx, chatID, "Групу для заявок відв'язано.")
 	case data == "admin:pitem_add":
 		h.sessions.SetState(user.UserID, stateAwaitPItemsAdd)
 		return h.sendPrompt(chatID, "Надішліть одну або кілька позицій — кожну з нового рядка.\n\n"+purchaseItemFormatHint)
