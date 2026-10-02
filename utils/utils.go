@@ -59,3 +59,20 @@ func CategoryEmoji(category string) string {
 		return "•"
 	}
 }
+
+// ParsePurchaseItemLine splits "Назва, одиниця" into name and optional unit.
+// The unit is everything after the last comma, so names may contain commas
+// only when a unit is given.
+func ParsePurchaseItemLine(raw string) (name, unit string, ok bool) {
+	raw = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(raw), "•-*"))
+	if idx := strings.LastIndex(raw, ","); idx >= 0 {
+		name = strings.TrimSpace(raw[:idx])
+		unit = strings.TrimSpace(raw[idx+1:])
+	} else {
+		name = raw
+	}
+	if name == "" {
+		return "", "", false
+	}
+	return name, unit, true
+}

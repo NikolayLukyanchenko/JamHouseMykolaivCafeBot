@@ -90,3 +90,12 @@ type DailyReportItem struct {
 func Categories() []string {
 	return []string{CategoryDrinks, CategoryFood, CategorySweets}
 }
+
+// PurchaseItem is a position from the admin-managed list that staff can tap
+// when composing a purchase request.
+type PurchaseItem struct {
+	ID        int64
+	Name      string
+	Unit      string
+	CreatedAt time.Time
+}

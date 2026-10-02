@@ -11,7 +11,6 @@ import (
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/bot/keyboards"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
-	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/reports"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/storage"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/utils"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -31,6 +30,13 @@ func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) erro
 	switch {
 	case update.CallbackQuery != nil:
 		return h.handleCallback(ctx, update.CallbackQuery)
+	case update.Message != nil && update.Message.Chat != nil && !update.Message.Chat.IsPrivate():
+		// In groups the bot only reacts to the command that binds the group
+		// for purchase requests; everything else there is ignored.
+		if update.Message.IsCommand() && update.Message.Command() == "purchase_here" {
+			return h.bindPurchaseChat(ctx, update.Message)
+		}
+		return nil
 	case update.Message != nil && update.Message.IsCommand():
 		return h.handleCommand(ctx, update.Message)
 	case update.Message != nil:
@@ -70,7 +76,7 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
 			return h.sendText(message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
 		}
-		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods())
+		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods(time.Now()))
 	default:
 		if !allowed {
 			return h.sendText(message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)
@@ -91,14 +97,12 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 		return h.sendText(message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)
 	}
 
-	if err := h.handleStateMessage(ctx, user, message); err != nil {
-		if err == errStateNotHandled {
-			// continue with regular routing
-		} else {
-			return err
-		}
-	} else {
-		return nil
+	// A main-menu button always wins over a pending text prompt, so tapping
+	// a menu button is never swallowed as the answer to a previous question.
+	if isMenuButton(message.Text) {
+		h.sessions.ClearState(user.UserID)
+	} else if err := h.handleStateMessage(ctx, user, message); err != errStateNotHandled {
+		return err
 	}
 
 	switch strings.TrimSpace(message.Text) {
@@ -116,7 +120,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 		if !hasAnyRole(user.Role, models.RoleAdmin) {
 			return h.sendText(message.Chat.ID, "Кнопка звіту доступна лише адміністратору.", replyKeyboard(user.Role))
 		}
-		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods())
+		return h.sendText(message.Chat.ID, "Оберіть період для звіту.", keyboards.ReportPeriods(time.Now()))
 	default:
 		return h.sendText(message.Chat.ID, "Не зрозумів повідомлення. Оберіть дію з меню нижче або скористайтеся /start.", replyKeyboard(user.Role))
 	}
@@ -131,30 +135,48 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 		return errStateNotHandled
 	}
 	if strings.EqualFold(text, "скасувати") {
-		h.sessions.ClearState(user.UserID)
-		h.sessions.ResetDraft(user.UserID)
-		return h.sendText(message.Chat.ID, "Дію скасовано.", replyKeyboard(user.Role))
+		return h.cancelInput(ctx, user, message.Chat.ID)
 	}
 
 	switch s.State {
 	case stateAwaitOrderQty:
 		qty, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Некоректна кількість. Введіть число більше нуля.", nil)
+			return h.sendPrompt(message.Chat.ID, "Некоректна кількість. Введіть число більше нуля.")
 		}
 		product, err := h.storage.GetProduct(ctx, s.SelectedProductID)
 		if err != nil {
 			return err
 		}
 		if product.Stock < qty+h.qtyInCart(user.UserID, product.ID) {
-			return h.sendText(message.Chat.ID, fmt.Sprintf("Недостатньо залишку. Доступно лише %s %s.", utils.FormatQuantity(product.Stock), product.Unit), nil)
+			return h.sendPrompt(message.Chat.ID, fmt.Sprintf("Недостатньо залишку. Доступно лише %s %s.", utils.FormatQuantity(product.Stock), product.Unit))
 		}
 		h.sessions.AddToCart(user.UserID, models.OrderItem{ProductID: product.ID, Name: product.Name, Category: product.Category, Qty: qty, SellPrice: product.SellPrice, CostPrice: product.CostPrice, Unit: product.Unit})
 		h.sessions.ClearState(user.UserID)
 		return h.sendCartSummary(message.Chat.ID, user.UserID)
-	case stateAwaitPurchaseText:
+	case stateAwaitPurchaseNote:
 		h.sessions.ClearState(user.UserID)
-		return h.forwardPurchaseRequest(ctx, user, message.Chat.ID, text)
+		s.Purchase.Note = text
+		return h.startPurchaseScreenKeepingDraft(ctx, message.Chat.ID, user.UserID)
+	case stateAwaitPItemsAdd:
+		if !hasAnyRole(user.Role, models.RoleAdmin) {
+			return h.sendText(message.Chat.ID, "Лише адміністратор може змінювати список закупки.", nil)
+		}
+		h.sessions.ClearState(user.UserID)
+		return h.addPurchaseItems(ctx, message.Chat.ID, text)
+	case stateAwaitPItemEdit:
+		if !hasAnyRole(user.Role, models.RoleAdmin) {
+			return h.sendText(message.Chat.ID, "Лише адміністратор може змінювати список закупки.", nil)
+		}
+		name, unit, ok := utils.ParsePurchaseItemLine(text)
+		if !ok {
+			return h.sendPrompt(message.Chat.ID, "Назва не може бути порожньою. Введіть ще раз.\n\n"+purchaseItemFormatHint)
+		}
+		h.sessions.ClearState(user.UserID)
+		if err := h.storage.UpdatePurchaseItem(ctx, s.EditingPurchaseItemID, name, unit); err != nil {
+			return err
+		}
+		return h.sendPurchaseItemsAdmin(ctx, message.Chat.ID, "Позицію оновлено.")
 	case stateAwaitProductName:
 		if !hasAnyRole(user.Role, models.RoleAdmin) {
 			return h.sendText(message.Chat.ID, "Лише адміністратор може редагувати товари.", nil)
@@ -165,27 +187,27 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	case stateAwaitProductCost:
 		value, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректну собівартість числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректну собівартість числом.")
 		}
 		s.DraftProduct.CostPrice = value
 		s.State = stateAwaitProductSell
-		return h.sendText(message.Chat.ID, "Введіть ціну продажу.", nil)
+		return h.sendPrompt(message.Chat.ID, "Введіть ціну продажу.")
 	case stateAwaitProductSell:
 		value, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректну ціну продажу числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректну ціну продажу числом.")
 		}
 		s.DraftProduct.SellPrice = value
 		s.State = stateAwaitProductUnit
-		return h.sendText(message.Chat.ID, "Введіть одиницю виміру (наприклад: шт, чашка, банка, порція, 100г).", nil)
+		return h.sendPrompt(message.Chat.ID, "Введіть одиницю виміру (наприклад: шт, чашка, банка, порція, 100г).")
 	case stateAwaitProductUnit:
 		s.DraftProduct.Unit = text
 		s.State = stateAwaitProductStock
-		return h.sendText(message.Chat.ID, "Введіть початковий залишок товару.", nil)
+		return h.sendPrompt(message.Chat.ID, "Введіть початковий залишок товару.")
 	case stateAwaitProductStock:
 		value, err := utils.ParseNonNegativeFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректний залишок числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректний залишок числом.")
 		}
 		s.DraftProduct.Stock = value
 		productID, err := h.storage.CreateProduct(ctx, models.Product{Name: s.DraftProduct.Name, Category: s.DraftProduct.Category, CostPrice: s.DraftProduct.CostPrice, SellPrice: s.DraftProduct.SellPrice, Unit: s.DraftProduct.Unit, Stock: s.DraftProduct.Stock, IsActive: true})
@@ -204,7 +226,7 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	case stateAwaitEditCost:
 		value, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректну собівартість числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректну собівартість числом.")
 		}
 		h.sessions.ClearState(user.UserID)
 		if err := h.storage.UpdateProductCostPrice(ctx, s.EditingProductID, value); err != nil {
@@ -214,7 +236,7 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	case stateAwaitEditSell:
 		value, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректну ціну продажу числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректну ціну продажу числом.")
 		}
 		h.sessions.ClearState(user.UserID)
 		if err := h.storage.UpdateProductSellPrice(ctx, s.EditingProductID, value); err != nil {
@@ -224,7 +246,7 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	case stateAwaitSetStock:
 		value, err := utils.ParseNonNegativeFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректний залишок числом.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректний залишок числом.")
 		}
 		h.sessions.ClearState(user.UserID)
 		if err := h.storage.UpdateProductStock(ctx, s.EditingProductID, value); err != nil {
@@ -234,7 +256,7 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	case stateAwaitIncreaseStock:
 		value, err := utils.ParsePositiveFloat(text)
 		if err != nil {
-			return h.sendText(message.Chat.ID, "Введіть коректну кількість для поповнення.", nil)
+			return h.sendPrompt(message.Chat.ID, "Введіть коректну кількість для поповнення.")
 		}
 		h.sessions.ClearState(user.UserID)
 		if err := h.storage.IncreaseProductStock(ctx, s.EditingProductID, value); err != nil {
@@ -250,6 +272,9 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	if callback == nil || callback.From == nil || callback.Message == nil {
 		return nil
 	}
+	if callback.Data == "noop" || !callback.Message.Chat.IsPrivate() {
+		return h.answerCallback(callback.ID, "")
+	}
 	user, allowed, err := h.authorize(ctx, callback.From)
 	if err != nil {
 		return err
@@ -261,17 +286,26 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	_ = h.answerCallback(callback.ID, "Готово")
 
 	data := callback.Data
+	if strings.HasPrefix(data, "admin:") && !hasAnyRole(user.Role, models.RoleAdmin) {
+		return h.sendText(callback.Message.Chat.ID, "Адмін-панель доступна лише адміністратору.", nil)
+	}
 	switch {
 	case data == "nav:main":
 		h.sessions.ClearState(user.UserID)
 		return h.sendWelcome(callback.Message.Chat.ID, user)
+	case data == "nav:cancel":
+		return h.cancelInput(ctx, user, callback.Message.Chat.ID)
+	case strings.HasPrefix(data, "pur:"):
+		return h.handlePurchaseCallback(ctx, user, callback)
+	case data == "admin:panel":
+		h.sessions.ClearState(user.UserID)
+		return h.sendAdminPanel(callback.Message.Chat.ID)
+	case data == "admin:pitems", data == "admin:pchat_unbind", strings.HasPrefix(data, "admin:pitem"):
+		return h.handlePurchaseItemsAdminCallback(ctx, user, callback.Message.Chat.ID, data)
 	case data == "admin:add_product":
-		if !hasAnyRole(user.Role, models.RoleAdmin) {
-			return h.sendText(callback.Message.Chat.ID, "Адмін-панель доступна лише адміністратору.", nil)
-		}
 		h.sessions.ResetDraft(user.UserID)
 		h.sessions.SetState(user.UserID, stateAwaitProductName)
-		return h.sendText(callback.Message.Chat.ID, "Введіть назву нового товару українською мовою.", nil)
+		return h.sendPrompt(callback.Message.Chat.ID, "Введіть назву нового товару українською мовою.")
 	case data == "admin:list_products":
 		return h.sendStocks(ctx, callback.Message.Chat.ID, true)
 	case data == "admin:edit_product", data == "admin:replenish_stock":
@@ -280,7 +314,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s := h.sessions.get(user.UserID)
 		s.DraftProduct.Category = strings.TrimPrefix(data, "admin:category:")
 		s.State = stateAwaitProductCost
-		return h.sendText(callback.Message.Chat.ID, "Введіть собівартість товару.", nil)
+		return h.sendPrompt(callback.Message.Chat.ID, "Введіть собівартість товару.")
 	case strings.HasPrefix(data, "admin:edit_select:"):
 		productID, err := strconv.ParseInt(strings.TrimPrefix(data, "admin:edit_select:"), 10, 64)
 		if err != nil {
@@ -295,7 +329,7 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s := h.sessions.get(user.UserID)
 		s.EditingProductID = productID
 		s.State = stateAwaitIncreaseStock
-		return h.sendText(callback.Message.Chat.ID, "Введіть кількість, на яку потрібно поповнити залишок.", nil)
+		return h.sendPrompt(callback.Message.Chat.ID, "Введіть кількість, на яку потрібно поповнити залишок.")
 	case strings.HasPrefix(data, "admin:action:"):
 		parts := strings.Split(data, ":")
 		if len(parts) != 4 {
@@ -311,16 +345,16 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		switch action {
 		case "name":
 			s.State = stateAwaitEditName
-			return h.sendText(callback.Message.Chat.ID, "Введіть нову назву товару.", nil)
+			return h.sendPrompt(callback.Message.Chat.ID, "Введіть нову назву товару.")
 		case "cost":
 			s.State = stateAwaitEditCost
-			return h.sendText(callback.Message.Chat.ID, "Введіть нову собівартість товару.", nil)
+			return h.sendPrompt(callback.Message.Chat.ID, "Введіть нову собівартість товару.")
 		case "sell":
 			s.State = stateAwaitEditSell
-			return h.sendText(callback.Message.Chat.ID, "Введіть нову ціну продажу товару.", nil)
+			return h.sendPrompt(callback.Message.Chat.ID, "Введіть нову ціну продажу товару.")
 		case "stock":
 			s.State = stateAwaitSetStock
-			return h.sendText(callback.Message.Chat.ID, "Введіть новий фактичний залишок товару.", nil)
+			return h.sendPrompt(callback.Message.Chat.ID, "Введіть новий фактичний залишок товару.")
 		default:
 			return nil
 		}
@@ -373,11 +407,12 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s := h.sessions.get(user.UserID)
 		s.SelectedProductID = productID
 		s.State = stateAwaitOrderQty
-		return h.sendText(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit), nil)
-	case data == "report:today":
-		return h.sendDailyReport(ctx, callback.Message.Chat.ID, time.Now())
-	case data == "report:yesterday":
-		return h.sendDailyReport(ctx, callback.Message.Chat.ID, time.Now().AddDate(0, 0, -1))
+		return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
+	case strings.HasPrefix(data, "report:"):
+		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
+			return h.sendText(callback.Message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
+		}
+		return h.handleReportCallback(ctx, callback.Message.Chat.ID, callback.Message.MessageID, data)
 	default:
 		return h.sendText(callback.Message.Chat.ID, "Невідома дія. Спробуйте ще раз з головного меню.", replyKeyboard(user.Role))
 	}
@@ -499,49 +534,6 @@ func (h *Handler) sendStocks(ctx context.Context, chatID int64, includeCost bool
 	return h.sendText(chatID, strings.TrimSpace(builder.String()), nil)
 }
 
-func (h *Handler) startPurchaseRequest(ctx context.Context, chatID, userID int64) error {
-	products, err := h.storage.ListLowStockProducts(ctx, 5)
-	if err != nil {
-		return err
-	}
-	var builder strings.Builder
-	builder.WriteString("🛒 Запит на закупку\n\n")
-	if len(products) == 0 {
-		builder.WriteString("Товарів з низьким залишком не знайдено.\n\n")
-	} else {
-		builder.WriteString("Низький залишок:\n")
-		for _, product := range products {
-			builder.WriteString(fmt.Sprintf("• %s — %s %s\n", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
-		}
-		builder.WriteString("\n")
-	}
-	builder.WriteString("Надішліть текстовий запит адміністратору. Для скасування напишіть «Скасувати».\n")
-	h.sessions.SetState(userID, stateAwaitPurchaseText)
-	return h.sendText(chatID, strings.TrimSpace(builder.String()), nil)
-}
-
-func (h *Handler) forwardPurchaseRequest(ctx context.Context, user models.User, chatID int64, text string) error {
-	admins, err := h.storage.ListAdmins(ctx)
-	if err != nil {
-		return err
-	}
-	messageText := fmt.Sprintf("🛒 Новий запит на закупку\n\nВід: %s (@%s, ID: %d)\n\n%s", user.FullName, user.Username, user.UserID, text)
-	for _, admin := range admins {
-		if err := h.sendText(admin.UserID, messageText, nil); err != nil {
-			log.Printf("не вдалося відправити запит адміну %d: %v", admin.UserID, err)
-		}
-	}
-	return h.sendText(chatID, "✅ Запит на закупку надіслано адміністратору.", nil)
-}
-
-func (h *Handler) sendDailyReport(ctx context.Context, chatID int64, date time.Time) error {
-	report, err := h.storage.GetDailyReport(ctx, date)
-	if err != nil {
-		return err
-	}
-	return h.sendText(chatID, reports.FormatDailyReport(report), nil)
-}
-
 func (h *Handler) sendAdminProductPicker(ctx context.Context, chatID int64, replenish bool) error {
 	products, err := h.storage.ListProducts(ctx, true)
 	if err != nil {
@@ -577,7 +569,7 @@ func (h *Handler) sendAdminProductCard(ctx context.Context, chatID, productID in
 			tgbotapi.NewInlineKeyboardButtonData("💰 Ціна продажу", fmt.Sprintf("admin:action:sell:%d", productID)),
 			tgbotapi.NewInlineKeyboardButtonData("📦 Залишок", fmt.Sprintf("admin:action:stock:%d", productID)),
 		),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "nav:main")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
 	)
 	return h.sendText(chatID, text, &markup)
 }
@@ -614,6 +606,55 @@ func (h *Handler) sendText(chatID int64, text string, markup any) error {
 	}
 	_, err := h.bot.Send(msg)
 	return err
+}
+
+// sendPrompt asks for typed input and offers a "Скасувати" button.
+func (h *Handler) sendPrompt(chatID int64, text string) error {
+	markup := keyboards.Cancel()
+	return h.sendText(chatID, text, &markup)
+}
+
+func (h *Handler) editText(chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup) error {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ReplyMarkup = markup
+	_, err := h.bot.Send(edit)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+// cancelInput aborts whatever text input the user was asked for.
+func (h *Handler) cancelInput(ctx context.Context, user models.User, chatID int64) error {
+	s := h.sessions.get(user.UserID)
+	state := s.State
+	h.sessions.ClearState(user.UserID)
+	switch state {
+	case stateAwaitPurchaseNote:
+		// Back to the purchase request being composed; keep selected items.
+		return h.startPurchaseScreenKeepingDraft(ctx, chatID, user.UserID)
+	case stateAwaitPItemsAdd, stateAwaitPItemEdit:
+		return h.sendPurchaseItemsAdmin(ctx, chatID, "")
+	}
+	h.sessions.ResetDraft(user.UserID)
+	return h.sendText(chatID, "Дію скасовано.", replyKeyboard(user.Role))
+}
+
+func (h *Handler) startPurchaseScreenKeepingDraft(ctx context.Context, chatID, userID int64) error {
+	text, markup, err := h.purchaseScreen(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return h.sendText(chatID, text, &markup)
+}
+
+func isMenuButton(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "Записати продаж", "Калькулятор замовлення", "Меню для клієнтів", "Мої продажі за сьогодні",
+		"Залишки товарів", "Замовити закупку", "Відправити звіт":
+		return true
+	}
+	return false
 }
 
 func (h *Handler) answerCallback(callbackID, text string) error {

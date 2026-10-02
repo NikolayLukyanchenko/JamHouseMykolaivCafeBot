@@ -9,7 +9,9 @@ import (
 const (
 	stateNone               = ""
 	stateAwaitOrderQty      = "await_order_qty"
-	stateAwaitPurchaseText  = "await_purchase_text"
+	stateAwaitPurchaseNote  = "await_purchase_note"
+	stateAwaitPItemsAdd     = "await_purchase_items_add"
+	stateAwaitPItemEdit     = "await_purchase_item_edit"
 	stateAwaitProductName   = "await_product_name"
 	stateAwaitProductCost   = "await_product_cost"
 	stateAwaitProductSell   = "await_product_sell"
@@ -38,6 +40,15 @@ type session struct {
 	PaymentMethod     string
 	DraftProduct      productDraft
 	Cart              []models.OrderItem
+
+	EditingPurchaseItemID int64
+	Purchase              purchaseDraft
+}
+
+// purchaseDraft is the purchase request being composed by tapping items.
+type purchaseDraft struct {
+	Qty  map[int64]int
+	Note string
 }
 
 type SessionManager struct {
@@ -97,4 +108,23 @@ func (m *SessionManager) ClearCart(userID int64) {
 	s := m.get(userID)
 	s.Cart = nil
 	s.PaymentMethod = ""
+}
+
+func (m *SessionManager) ResetPurchase(userID int64) {
+	m.get(userID).Purchase = purchaseDraft{Qty: make(map[int64]int)}
+}
+
+// AdjustPurchaseQty changes the quantity of a purchase item by delta and
+// drops it from the draft when it reaches zero.
+func (m *SessionManager) AdjustPurchaseQty(userID, itemID int64, delta int) {
+	s := m.get(userID)
+	if s.Purchase.Qty == nil {
+		s.Purchase.Qty = make(map[int64]int)
+	}
+	n := s.Purchase.Qty[itemID] + delta
+	if n <= 0 {
+		delete(s.Purchase.Qty, itemID)
+		return
+	}
+	s.Purchase.Qty[itemID] = n
 }

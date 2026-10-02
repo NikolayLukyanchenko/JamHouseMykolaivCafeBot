@@ -73,6 +73,16 @@ cost_price REAL NOT NULL,
 FOREIGN KEY(sale_id) REFERENCES sales(id),
 FOREIGN KEY(product_id) REFERENCES products(id)
 );`,
+		`CREATE TABLE IF NOT EXISTS settings (
+key TEXT PRIMARY KEY,
+value TEXT NOT NULL
+);`,
+		`CREATE TABLE IF NOT EXISTS purchase_items (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+unit TEXT NOT NULL DEFAULT '',
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -363,6 +373,95 @@ ORDER BY si.name
 	return report, rows.Err()
 }
 
+func (s *Storage) CreatePurchaseItem(ctx context.Context, name, unit string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO purchase_items (name, unit) VALUES (?, ?)`, name, unit)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Storage) GetPurchaseItem(ctx context.Context, itemID int64) (models.PurchaseItem, error) {
+	var item models.PurchaseItem
+	var createdAt string
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, unit, created_at FROM purchase_items WHERE id = ?`, itemID)
+	if err := row.Scan(&item.ID, &item.Name, &item.Unit, &createdAt); err != nil {
+		return models.PurchaseItem{}, err
+	}
+	item.CreatedAt = parseDBTime(createdAt)
+	return item, nil
+}
+
+func (s *Storage) ListPurchaseItems(ctx context.Context) ([]models.PurchaseItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, unit, created_at FROM purchase_items ORDER BY name COLLATE NOCASE, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []models.PurchaseItem
+	for rows.Next() {
+		var item models.PurchaseItem
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.Name, &item.Unit, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt = parseDBTime(createdAt)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Storage) UpdatePurchaseItem(ctx context.Context, itemID int64, name, unit string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE purchase_items SET name = ?, unit = ? WHERE id = ?`, name, unit, itemID)
+	return err
+}
+
+func (s *Storage) DeletePurchaseItem(ctx context.Context, itemID int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM purchase_items WHERE id = ?`, itemID)
+	return err
+}
+
+// SalesDays returns the local calendar days (as "2006-01-02") in [from, to)
+// that have at least one sale.
+func (s *Storage) SalesDays(ctx context.Context, from, to time.Time) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT created_at FROM sales WHERE created_at >= ? AND created_at < ?`, formatDBTime(from), formatDBTime(to))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	days := make(map[string]bool)
+	for rows.Next() {
+		var createdAt string
+		if err := rows.Scan(&createdAt); err != nil {
+			return nil, err
+		}
+		if t := parseDBTime(createdAt); !t.IsZero() {
+			days[t.In(time.Local).Format("2006-01-02")] = true
+		}
+	}
+	return days, rows.Err()
+}
+
+// GetSetting returns "" when the key is not set.
+func (s *Storage) GetSetting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return value, err
+}
+
+func (s *Storage) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+func (s *Storage) DeleteSetting(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
+	return err
+}
+
 func scanProducts(rows *sql.Rows) ([]models.Product, error) {
 	var products []models.Product
 	for rows.Next() {
@@ -391,8 +490,10 @@ func boolToInt(value bool) int {
 	return 0
 }
 
+// formatDBTime converts to UTC because created_at columns are filled by
+// SQLite's CURRENT_TIMESTAMP, which is always UTC.
 func formatDBTime(value time.Time) string {
-	return value.Format(sqliteDateTimeLayout)
+	return value.UTC().Format(sqliteDateTimeLayout)
 }
 
 func parseDBTime(raw string) time.Time {
