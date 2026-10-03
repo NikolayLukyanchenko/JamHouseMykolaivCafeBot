@@ -69,6 +69,7 @@ type UserSalesSummary struct {
 	CardTotal  float64
 	GrandTotal float64
 	Checks     int
+	Items      []DailyReportItem
 }
 
 type DailyReport struct {
@@ -78,13 +79,29 @@ type DailyReport struct {
 	TotalRevenue float64
 	CostTotal    float64
 	Profit       float64
+	Checks       int
 	Items        []DailyReportItem
+	Sellers      []SellerSummary
 }
 
 type DailyReportItem struct {
 	ProductID int64
 	Name      string
+	Category  string
+	Unit      string
 	Qty       float64
+	Revenue   float64
+	Cost      float64
+}
+
+// SellerSummary is one seller's share of a day's sales.
+type SellerSummary struct {
+	UserID int64
+	Name   string
+	Checks int
+	Cash   float64
+	Card   float64
+	Total  float64
 }
 
 func Categories() []string {
@@ -98,4 +115,15 @@ type PurchaseItem struct {
 	Name      string
 	Unit      string
 	CreatedAt time.Time
+}
+
+// SaleCheck is one sale (check) with its items, for check lists in reports.
+type SaleCheck struct {
+	ID            int64
+	UserID        int64
+	SellerName    string
+	Total         float64
+	PaymentMethod string
+	CreatedAt     time.Time // local time
+	Items         []SaleItem
 }

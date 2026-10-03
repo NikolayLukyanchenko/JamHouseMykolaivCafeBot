@@ -111,7 +111,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 	case "Меню для клієнтів":
 		return h.sendCustomerMenu(ctx, message.Chat.ID)
 	case "Мої продажі за сьогодні":
-		return h.sendMySalesSummary(ctx, message.Chat.ID, user)
+		return h.sendMySales(ctx, message.Chat.ID, 0, user, time.Now())
 	case "Залишки товарів":
 		return h.sendStocks(ctx, message.Chat.ID, false)
 	case "Замовити закупку":
@@ -408,6 +408,12 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s.SelectedProductID = productID
 		s.State = stateAwaitOrderQty
 		return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
+	case strings.HasPrefix(data, "my:day:"):
+		day, err := parseDay(strings.TrimPrefix(data, "my:day:"))
+		if err != nil {
+			return err
+		}
+		return h.sendMySales(ctx, callback.Message.Chat.ID, callback.Message.MessageID, user, day)
 	case strings.HasPrefix(data, "report:"):
 		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
 			return h.sendText(callback.Message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
@@ -502,15 +508,6 @@ func (h *Handler) sendCustomerMenu(ctx context.Context, chatID int64) error {
 	return h.sendText(chatID, strings.TrimSpace(builder.String()), nil)
 }
 
-func (h *Handler) sendMySalesSummary(ctx context.Context, chatID int64, user models.User) error {
-	summary, err := h.storage.GetUserSalesSummary(ctx, user.UserID, time.Now())
-	if err != nil {
-		return err
-	}
-	text := fmt.Sprintf("📅 Ваші продажі за сьогодні\n\n💵 Готівка: %s\n💳 Карта: %s\n💰 Разом: %s\n🧾 Кількість чеків: %d", utils.FormatMoney(summary.CashTotal), utils.FormatMoney(summary.CardTotal), utils.FormatMoney(summary.GrandTotal), summary.Checks)
-	return h.sendText(chatID, text, nil)
-}
-
 func (h *Handler) sendStocks(ctx context.Context, chatID int64, includeCost bool) error {
 	products, err := h.storage.ListProducts(ctx, includeCost)
 	if err != nil {
@@ -598,15 +595,25 @@ func (h *Handler) saleReceiptText(sale models.Sale, items []models.SaleItem) str
 	return builder.String()
 }
 
+// sendText sends text, splitting it into several messages when it exceeds
+// Telegram's length limit; the markup goes with the last part.
 func (h *Handler) sendText(chatID int64, text string, markup any) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = ""
-	if markup != nil {
-		msg.ReplyMarkup = markup
+	parts := utils.SplitMessage(text, telegramMessageLimit)
+	for i, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		if markup != nil && i == len(parts)-1 {
+			msg.ReplyMarkup = markup
+		}
+		if _, err := h.bot.Send(msg); err != nil {
+			return err
+		}
 	}
-	_, err := h.bot.Send(msg)
-	return err
+	return nil
 }
+
+// telegramMessageLimit is in bytes, which is never less than Telegram's
+// limit of 4096 UTF-16 code units for the same text.
+const telegramMessageLimit = 4000
 
 // sendPrompt asks for typed input and offers a "Скасувати" button.
 func (h *Handler) sendPrompt(chatID int64, text string) error {

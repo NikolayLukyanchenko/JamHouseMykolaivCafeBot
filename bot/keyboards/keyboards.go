@@ -111,6 +111,37 @@ func ReportPeriods(now time.Time) tgbotapi.InlineKeyboardMarkup {
 	)
 }
 
+// dayNavRow is "◀️ 02.10 | Сьогодні | 04.10 ▶️" for browsing reports day by
+// day. The forward button is hidden on today; "Сьогодні" only on past days.
+func dayNavRow(prefix string, day, now time.Time) []tgbotapi.InlineKeyboardButton {
+	prev := day.AddDate(0, 0, -1)
+	row := []tgbotapi.InlineKeyboardButton{tgbotapi.NewInlineKeyboardButtonData("◀️ "+prev.Format("02.01"), prefix+prev.Format("2006-01-02"))}
+	if day.Format("2006-01-02") < now.Format("2006-01-02") {
+		next := day.AddDate(0, 0, 1)
+		if next.Format("2006-01-02") != now.Format("2006-01-02") {
+			row = append(row, tgbotapi.NewInlineKeyboardButtonData("Сьогодні", prefix+now.Format("2006-01-02")))
+		}
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(next.Format("02.01")+" ▶️", prefix+next.Format("2006-01-02")))
+	}
+	return row
+}
+
+// DailyReportActions is attached to a daily report.
+func DailyReportActions(day, now time.Time) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		dayNavRow("report:nav:", day, now),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧾 Чеки за день", "report:checks:"+day.Format("2006-01-02")),
+			tgbotapi.NewInlineKeyboardButtonData("📅 Календар", "report:cal:"+day.Format("2006-01")),
+		),
+	)
+}
+
+// MySalesActions is attached to "Мої продажі".
+func MySalesActions(day, now time.Time) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(dayNavRow("my:day:", day, now))
+}
+
 var monthNames = [...]string{"Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"}
 
 // MonthTitle renders e.g. "Жовтень 2026".

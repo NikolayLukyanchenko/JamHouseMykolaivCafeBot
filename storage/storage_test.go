@@ -191,3 +191,76 @@ func TestSettings(t *testing.T) {
 		t.Fatalf("got %q after delete", v)
 	}
 }
+
+func TestDailyReportBreakdown(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	latte, _ := store.CreateProduct(ctx, models.Product{Name: "Лате", Category: models.CategoryDrinks, CostPrice: 30, SellPrice: 70, Unit: "чашка", Stock: 100, IsActive: true})
+	cake, _ := store.CreateProduct(ctx, models.Product{Name: "Чізкейк", Category: models.CategorySweets, CostPrice: 40, SellPrice: 90, Unit: "шт", Stock: 100, IsActive: true})
+
+	mustSell := func(user int64, payment string, items ...models.OrderItem) {
+		if _, _, err := store.RecordSale(ctx, user, payment, items); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustSell(1, models.PaymentCash, models.OrderItem{ProductID: latte, Qty: 2})
+	mustSell(2, models.PaymentCard, models.OrderItem{ProductID: latte, Qty: 1}, models.OrderItem{ProductID: cake, Qty: 1})
+	// A later price change must not rewrite today's numbers.
+	if err := store.UpdateProductSellPrice(ctx, latte, 999); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := store.GetDailyReport(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Checks != 2 || report.TotalRevenue != 300 || report.CostTotal != 130 || report.CashRevenue != 140 || report.CardRevenue != 160 {
+		t.Fatalf("unexpected totals: %+v", report)
+	}
+	if len(report.Items) != 2 {
+		t.Fatalf("unexpected items: %+v", report.Items)
+	}
+	l := report.Items[0]
+	if l.Name != "Лате" || l.Qty != 3 || l.Revenue != 210 || l.Cost != 90 || l.Unit != "чашка" || l.Category != models.CategoryDrinks {
+		t.Fatalf("unexpected latte line: %+v", l)
+	}
+	if len(report.Sellers) != 2 || report.Sellers[0].UserID != 2 || report.Sellers[0].Total != 160 || report.Sellers[1].Checks != 1 {
+		t.Fatalf("unexpected sellers: %+v", report.Sellers)
+	}
+
+	checks, err := store.ListChecks(ctx, time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 2 || checks[0].UserID != 1 || len(checks[0].Items) != 1 || len(checks[1].Items) != 2 || checks[1].Total != 160 {
+		t.Fatalf("unexpected checks: %+v", checks)
+	}
+	if checks[0].CreatedAt.IsZero() || checks[0].CreatedAt.Location() != time.Local {
+		t.Fatalf("check time must be local: %v", checks[0].CreatedAt)
+	}
+	ownChecks, err := store.ListChecks(ctx, time.Now(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownChecks) != 1 || ownChecks[0].UserID != 2 {
+		t.Fatalf("unexpected own checks: %+v", ownChecks)
+	}
+
+	mine, err := store.GetUserSalesSummary(ctx, 1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mine.Checks != 1 || mine.GrandTotal != 140 || len(mine.Items) != 1 || mine.Items[0].Qty != 2 {
+		t.Fatalf("per-user summary must include only own sales: %+v", mine)
+	}
+}
