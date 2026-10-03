@@ -329,6 +329,11 @@ WHERE user_id = ? AND created_at >= ? AND created_at < ?
 	if err := row.Scan(&summary.CashTotal, &summary.CardTotal, &summary.GrandTotal, &summary.Checks); err != nil {
 		return summary, err
 	}
+	items, err := s.soldItems(ctx, start, end, userID)
+	if err != nil {
+		return summary, err
+	}
+	summary.Items = items
 	return summary, nil
 }
 
@@ -341,36 +346,74 @@ SELECT
 COALESCE(SUM(CASE WHEN payment_method = ? THEN total END), 0),
 COALESCE(SUM(CASE WHEN payment_method = ? THEN total END), 0),
 COALESCE(SUM(total), 0),
-COALESCE(SUM(cost_total), 0)
+COALESCE(SUM(cost_total), 0),
+COUNT(*)
 FROM sales
 WHERE created_at >= ? AND created_at < ?
 `, models.PaymentCash, models.PaymentCard, formatDBTime(start), formatDBTime(end))
-	if err := row.Scan(&report.CashRevenue, &report.CardRevenue, &report.TotalRevenue, &report.CostTotal); err != nil {
+	if err := row.Scan(&report.CashRevenue, &report.CardRevenue, &report.TotalRevenue, &report.CostTotal, &report.Checks); err != nil {
 		return report, err
 	}
 	report.Profit = report.TotalRevenue - report.CostTotal
 
+	items, err := s.soldItems(ctx, start, end, 0)
+	if err != nil {
+		return report, err
+	}
+	report.Items = items
+
 	rows, err := s.db.QueryContext(ctx, `
-SELECT si.product_id, si.name, COALESCE(SUM(si.qty), 0)
-FROM sale_items si
-JOIN sales s ON s.id = si.sale_id
+SELECT s.user_id, COALESCE(u.full_name, ''), COUNT(*),
+COALESCE(SUM(CASE WHEN s.payment_method = ? THEN s.total END), 0),
+COALESCE(SUM(CASE WHEN s.payment_method = ? THEN s.total END), 0),
+COALESCE(SUM(s.total), 0)
+FROM sales s
+LEFT JOIN users u ON u.user_id = s.user_id
 WHERE s.created_at >= ? AND s.created_at < ?
-GROUP BY si.product_id, si.name
-ORDER BY si.name
-`, formatDBTime(start), formatDBTime(end))
+GROUP BY s.user_id
+ORDER BY 6 DESC
+`, models.PaymentCash, models.PaymentCard, formatDBTime(start), formatDBTime(end))
 	if err != nil {
 		return report, err
 	}
 	defer rows.Close()
-
 	for rows.Next() {
-		var item models.DailyReportItem
-		if err := rows.Scan(&item.ProductID, &item.Name, &item.Qty); err != nil {
+		var seller models.SellerSummary
+		if err := rows.Scan(&seller.UserID, &seller.Name, &seller.Checks, &seller.Cash, &seller.Card, &seller.Total); err != nil {
 			return report, err
 		}
-		report.Items = append(report.Items, item)
+		report.Sellers = append(report.Sellers, seller)
 	}
 	return report, rows.Err()
+}
+
+// soldItems aggregates sold quantities, revenue and cost per product in
+// [start, end). userID 0 means all sellers. Revenue and cost use the prices
+// saved with each sale, so later price changes do not rewrite history.
+func (s *Storage) soldItems(ctx context.Context, start, end time.Time, userID int64) ([]models.DailyReportItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT si.product_id, si.name, COALESCE(p.category, ''), COALESCE(p.unit, ''),
+SUM(si.qty), SUM(si.qty * si.sell_price), SUM(si.qty * si.cost_price)
+FROM sale_items si
+JOIN sales s ON s.id = si.sale_id
+LEFT JOIN products p ON p.id = si.product_id
+WHERE s.created_at >= ? AND s.created_at < ? AND (? = 0 OR s.user_id = ?)
+GROUP BY si.product_id, si.name
+ORDER BY 6 DESC, si.name
+`, formatDBTime(start), formatDBTime(end), userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []models.DailyReportItem
+	for rows.Next() {
+		var item models.DailyReportItem
+		if err := rows.Scan(&item.ProductID, &item.Name, &item.Category, &item.Unit, &item.Qty, &item.Revenue, &item.Cost); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Storage) CreatePurchaseItem(ctx context.Context, name, unit string) (int64, error) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -75,4 +76,22 @@ func ParsePurchaseItemLine(raw string) (name, unit string, ok bool) {
 		return "", "", false
 	}
 	return name, unit, true
+}
+
+// SplitMessage splits text into parts of at most limit bytes, preferring
+// line breaks and never cutting a UTF-8 character in half.
+func SplitMessage(text string, limit int) []string {
+	var parts []string
+	for len(text) > limit {
+		cut := strings.LastIndex(text[:limit], "\n")
+		if cut <= 0 {
+			cut = limit
+			for cut > 0 && !utf8.RuneStart(text[cut]) {
+				cut--
+			}
+		}
+		parts = append(parts, strings.TrimRight(text[:cut], "\n"))
+		text = strings.TrimLeft(text[cut:], "\n")
+	}
+	return append(parts, text)
 }

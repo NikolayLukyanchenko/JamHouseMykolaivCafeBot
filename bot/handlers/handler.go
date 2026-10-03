@@ -11,6 +11,7 @@ import (
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/bot/keyboards"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
+	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/reports"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/storage"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/utils"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -503,12 +504,12 @@ func (h *Handler) sendCustomerMenu(ctx context.Context, chatID int64) error {
 }
 
 func (h *Handler) sendMySalesSummary(ctx context.Context, chatID int64, user models.User) error {
-	summary, err := h.storage.GetUserSalesSummary(ctx, user.UserID, time.Now())
+	now := time.Now()
+	summary, err := h.storage.GetUserSalesSummary(ctx, user.UserID, now)
 	if err != nil {
 		return err
 	}
-	text := fmt.Sprintf("📅 Ваші продажі за сьогодні\n\n💵 Готівка: %s\n💳 Карта: %s\n💰 Разом: %s\n🧾 Кількість чеків: %d", utils.FormatMoney(summary.CashTotal), utils.FormatMoney(summary.CardTotal), utils.FormatMoney(summary.GrandTotal), summary.Checks)
-	return h.sendText(chatID, text, nil)
+	return h.sendText(chatID, reports.FormatUserSales(user.FullName, now, summary), nil)
 }
 
 func (h *Handler) sendStocks(ctx context.Context, chatID int64, includeCost bool) error {
@@ -598,15 +599,25 @@ func (h *Handler) saleReceiptText(sale models.Sale, items []models.SaleItem) str
 	return builder.String()
 }
 
+// sendText sends text, splitting it into several messages when it exceeds
+// Telegram's length limit; the markup goes with the last part.
 func (h *Handler) sendText(chatID int64, text string, markup any) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = ""
-	if markup != nil {
-		msg.ReplyMarkup = markup
+	parts := utils.SplitMessage(text, telegramMessageLimit)
+	for i, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		if markup != nil && i == len(parts)-1 {
+			msg.ReplyMarkup = markup
+		}
+		if _, err := h.bot.Send(msg); err != nil {
+			return err
+		}
 	}
-	_, err := h.bot.Send(msg)
-	return err
+	return nil
 }
+
+// telegramMessageLimit is in bytes, which is never less than Telegram's
+// limit of 4096 UTF-16 code units for the same text.
+const telegramMessageLimit = 4000
 
 // sendPrompt asks for typed input and offers a "Скасувати" button.
 func (h *Handler) sendPrompt(chatID int64, text string) error {
