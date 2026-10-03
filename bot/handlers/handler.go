@@ -11,7 +11,6 @@ import (
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/bot/keyboards"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
-	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/reports"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/storage"
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/utils"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -112,7 +111,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 	case "Меню для клієнтів":
 		return h.sendCustomerMenu(ctx, message.Chat.ID)
 	case "Мої продажі за сьогодні":
-		return h.sendMySalesSummary(ctx, message.Chat.ID, user)
+		return h.sendMySales(ctx, message.Chat.ID, 0, user, time.Now())
 	case "Залишки товарів":
 		return h.sendStocks(ctx, message.Chat.ID, false)
 	case "Замовити закупку":
@@ -409,6 +408,12 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		s.SelectedProductID = productID
 		s.State = stateAwaitOrderQty
 		return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
+	case strings.HasPrefix(data, "my:day:"):
+		day, err := parseDay(strings.TrimPrefix(data, "my:day:"))
+		if err != nil {
+			return err
+		}
+		return h.sendMySales(ctx, callback.Message.Chat.ID, callback.Message.MessageID, user, day)
 	case strings.HasPrefix(data, "report:"):
 		if !hasAnyRole(user.Role, models.RoleAdmin, models.RoleSellerHead) {
 			return h.sendText(callback.Message.Chat.ID, "Звіт доступний лише головному касиру або адміністратору.", nil)
@@ -501,15 +506,6 @@ func (h *Handler) sendCustomerMenu(ctx context.Context, chatID int64) error {
 		}
 	}
 	return h.sendText(chatID, strings.TrimSpace(builder.String()), nil)
-}
-
-func (h *Handler) sendMySalesSummary(ctx context.Context, chatID int64, user models.User) error {
-	now := time.Now()
-	summary, err := h.storage.GetUserSalesSummary(ctx, user.UserID, now)
-	if err != nil {
-		return err
-	}
-	return h.sendText(chatID, reports.FormatUserSales(user.FullName, now, summary), nil)
 }
 
 func (h *Handler) sendStocks(ctx context.Context, chatID int64, includeCost bool) error {

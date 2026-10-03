@@ -238,6 +238,24 @@ func TestDailyReportBreakdown(t *testing.T) {
 		t.Fatalf("unexpected sellers: %+v", report.Sellers)
 	}
 
+	checks, err := store.ListChecks(ctx, time.Now(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checks) != 2 || checks[0].UserID != 1 || len(checks[0].Items) != 1 || len(checks[1].Items) != 2 || checks[1].Total != 160 {
+		t.Fatalf("unexpected checks: %+v", checks)
+	}
+	if checks[0].CreatedAt.IsZero() || checks[0].CreatedAt.Location() != time.Local {
+		t.Fatalf("check time must be local: %v", checks[0].CreatedAt)
+	}
+	ownChecks, err := store.ListChecks(ctx, time.Now(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ownChecks) != 1 || ownChecks[0].UserID != 2 {
+		t.Fatalf("unexpected own checks: %+v", ownChecks)
+	}
+
 	mine, err := store.GetUserSalesSummary(ctx, 1, time.Now())
 	if err != nil {
 		t.Fatal(err)

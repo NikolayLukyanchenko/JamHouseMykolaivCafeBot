@@ -30,3 +30,19 @@ func TestReportCalendar(t *testing.T) {
 		t.Fatalf("past month must link forward: %+v", nav)
 	}
 }
+
+func TestDayNavRow(t *testing.T) {
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	today := dayNavRow("my:day:", now, now)
+	if len(today) != 1 || *today[0].CallbackData != "my:day:2026-10-02" {
+		t.Fatalf("today: only a back button expected: %+v", today)
+	}
+	yesterday := dayNavRow("my:day:", now.AddDate(0, 0, -1), now)
+	if len(yesterday) != 2 || *yesterday[1].CallbackData != "my:day:2026-10-03" {
+		t.Fatalf("yesterday: back + forward expected: %+v", yesterday)
+	}
+	old := dayNavRow("my:day:", now.AddDate(0, 0, -5), now)
+	if len(old) != 3 || old[1].Text != "Сьогодні" || *old[2].CallbackData != "my:day:2026-09-29" {
+		t.Fatalf("older day: back + today + forward expected: %+v", old)
+	}
+}

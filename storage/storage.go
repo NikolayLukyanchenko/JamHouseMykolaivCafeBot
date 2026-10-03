@@ -387,6 +387,43 @@ ORDER BY 6 DESC
 	return report, rows.Err()
 }
 
+// ListChecks returns the day's sales in chronological order with their
+// items. userID 0 means all sellers.
+func (s *Storage) ListChecks(ctx context.Context, date time.Time, userID int64) ([]models.SaleCheck, error) {
+	start, end := dayBounds(date)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, s.user_id, COALESCE(u.full_name, ''), s.total, s.payment_method, s.created_at,
+COALESCE(si.name, ''), COALESCE(si.qty, 0)
+FROM sales s
+LEFT JOIN users u ON u.user_id = s.user_id
+LEFT JOIN sale_items si ON si.sale_id = s.id
+WHERE s.created_at >= ? AND s.created_at < ? AND (? = 0 OR s.user_id = ?)
+ORDER BY s.created_at, s.id, si.id
+`, formatDBTime(start), formatDBTime(end), userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checks []models.SaleCheck
+	for rows.Next() {
+		var check models.SaleCheck
+		var createdAt, itemName string
+		var qty float64
+		if err := rows.Scan(&check.ID, &check.UserID, &check.SellerName, &check.Total, &check.PaymentMethod, &createdAt, &itemName, &qty); err != nil {
+			return nil, err
+		}
+		if n := len(checks); n == 0 || checks[n-1].ID != check.ID {
+			check.CreatedAt = parseDBTime(createdAt).In(time.Local)
+			checks = append(checks, check)
+		}
+		if itemName != "" {
+			last := &checks[len(checks)-1]
+			last.Items = append(last.Items, models.SaleItem{SaleID: check.ID, Name: itemName, Qty: qty})
+		}
+	}
+	return checks, rows.Err()
+}
+
 // soldItems aggregates sold quantities, revenue and cost per product in
 // [start, end). userID 0 means all sellers. Revenue and cost use the prices
 // saved with each sale, so later price changes do not rewrite history.

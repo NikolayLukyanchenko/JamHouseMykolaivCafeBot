@@ -116,3 +116,14 @@ type PurchaseItem struct {
 	Unit      string
 	CreatedAt time.Time
 }
+
+// SaleCheck is one sale (check) with its items, for check lists in reports.
+type SaleCheck struct {
+	ID            int64
+	UserID        int64
+	SellerName    string
+	Total         float64
+	PaymentMethod string
+	CreatedAt     time.Time // local time
+	Items         []SaleItem
+}

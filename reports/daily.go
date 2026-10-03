@@ -47,10 +47,26 @@ func FormatDailyReport(report models.DailyReport) string {
 	return strings.TrimSpace(b.String())
 }
 
-// FormatUserSales renders "Мої продажі за сьогодні" for one seller.
-func FormatUserSales(name string, date time.Time, summary models.UserSalesSummary) string {
+// DayLabel renders "сьогодні", "вчора" or the date.
+func DayLabel(date, now time.Time) string {
+	switch date.Format("2006-01-02") {
+	case now.Format("2006-01-02"):
+		return "сьогодні"
+	case now.AddDate(0, 0, -1).Format("2006-01-02"):
+		return "вчора"
+	default:
+		return date.Format("02.01.2006")
+	}
+}
+
+// FormatUserSales renders "Мої продажі" for one seller and one day.
+func FormatUserSales(name string, date, now time.Time, summary models.UserSalesSummary, checks []models.SaleCheck) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📅 Ваші продажі за %s\n👤 %s\n\n", date.Format("02.01.2006"), name))
+	b.WriteString(fmt.Sprintf("📅 Ваші продажі за %s\n👤 %s\n\n", DayLabel(date, now), name))
+	if summary.Checks == 0 {
+		b.WriteString("Продажів за цей день немає.")
+		return b.String()
+	}
 	b.WriteString(fmt.Sprintf("💵 Готівка: %s\n", utils.FormatMoney(summary.CashTotal)))
 	b.WriteString(fmt.Sprintf("💳 Карта: %s\n", utils.FormatMoney(summary.CardTotal)))
 	b.WriteString(fmt.Sprintf("💰 Разом: %s\n", utils.FormatMoney(summary.GrandTotal)))
@@ -59,8 +75,45 @@ func FormatUserSales(name string, date time.Time, summary models.UserSalesSummar
 		b.WriteString("\n🛍 Продані товари\n")
 		writeItemsByCategory(&b, summary.Items, false)
 	}
+	if len(checks) > 0 {
+		b.WriteString("\n🧾 Чеки\n")
+		writeChecks(&b, checks, false)
+	}
 	b.WriteString("\nℹ️ Тут лише чеки, які провели ви. Підсумок усього кафе — у звіті за день.")
 	return strings.TrimSpace(b.String())
+}
+
+// FormatChecks renders all checks of a day with time and seller.
+func FormatChecks(date time.Time, checks []models.SaleCheck) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("🧾 Чеки за %s\n\n", date.Format("02.01.2006")))
+	if len(checks) == 0 {
+		b.WriteString("Продажів за цей день немає.")
+		return b.String()
+	}
+	writeChecks(&b, checks, true)
+	return strings.TrimSpace(b.String())
+}
+
+func writeChecks(b *strings.Builder, checks []models.SaleCheck, withSeller bool) {
+	for _, check := range checks {
+		payment := "💵"
+		if check.PaymentMethod == models.PaymentCard {
+			payment = "💳"
+		}
+		b.WriteString(fmt.Sprintf("🕐 %s · #%d · %s %s", check.CreatedAt.Format("15:04"), check.ID, payment, utils.FormatMoney(check.Total)))
+		if withSeller && check.SellerName != "" {
+			b.WriteString(" · " + check.SellerName)
+		}
+		b.WriteString("\n")
+		if len(check.Items) > 0 {
+			names := make([]string, 0, len(check.Items))
+			for _, item := range check.Items {
+				names = append(names, fmt.Sprintf("%s ×%s", item.Name, utils.FormatQuantity(item.Qty)))
+			}
+			b.WriteString("    " + strings.Join(names, ", ") + "\n")
+		}
+	}
 }
 
 func writeItemsByCategory(b *strings.Builder, items []models.DailyReportItem, withCost bool) {
