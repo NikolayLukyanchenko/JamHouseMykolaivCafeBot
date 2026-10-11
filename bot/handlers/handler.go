@@ -355,6 +355,26 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		case "stock":
 			s.State = stateAwaitSetStock
 			return h.sendPrompt(callback.Message.Chat.ID, "Введіть новий фактичний залишок товару.")
+		case "hide":
+			product, err := h.storage.GetProduct(ctx, productID)
+			if err != nil {
+				return err
+			}
+			markup := tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("Так, прибрати", fmt.Sprintf("admin:action:hideok:%d", productID)),
+				tgbotapi.NewInlineKeyboardButtonData("Ні", fmt.Sprintf("admin:edit_select:%d", productID)),
+			))
+			return h.sendText(callback.Message.Chat.ID, fmt.Sprintf("Прибрати «%s» з меню? Товар зникне з продажу та меню для клієнтів. Історія продажів і звіти збережуться, товар можна буде повернути.", product.Name), &markup)
+		case "hideok":
+			if err := h.storage.SetProductActive(ctx, productID, false); err != nil {
+				return err
+			}
+			return h.sendAdminProductCard(ctx, callback.Message.Chat.ID, productID, "Товар прибрано з меню.")
+		case "show":
+			if err := h.storage.SetProductActive(ctx, productID, true); err != nil {
+				return err
+			}
+			return h.sendAdminProductCard(ctx, callback.Message.Chat.ID, productID, "Товар повернуто в меню.")
 		default:
 			return nil
 		}
@@ -545,6 +565,11 @@ func (h *Handler) sendAdminProductPicker(ctx context.Context, chatID int64, repl
 		prefix = "admin:replenish_select:"
 		title = "Оберіть товар для поповнення залишку."
 	}
+	for i := range products {
+		if !products[i].IsActive {
+			products[i].Name = "🚫 " + products[i].Name
+		}
+	}
 	return h.sendText(chatID, title, keyboards.ProductButtons(products, prefix, "admin:list_products"))
 }
 
@@ -554,6 +579,11 @@ func (h *Handler) sendAdminProductCard(ctx context.Context, chatID, productID in
 		return err
 	}
 	text := fmt.Sprintf("📦 %s\n\nКатегорія: %s\nСобівартість: %s\nЦіна продажу: %s\nОдиниця: %s\nЗалишок: %s %s", product.Name, product.Category, utils.FormatMoney(product.CostPrice), utils.FormatMoney(product.SellPrice), product.Unit, utils.FormatQuantity(product.Stock), product.Unit)
+	visibility := tgbotapi.NewInlineKeyboardButtonData("🗑 Прибрати з меню", fmt.Sprintf("admin:action:hide:%d", productID))
+	if !product.IsActive {
+		text += "\n\n🚫 Прибрано з меню — не продається і не показується клієнтам."
+		visibility = tgbotapi.NewInlineKeyboardButtonData("♻️ Повернути в меню", fmt.Sprintf("admin:action:show:%d", productID))
+	}
 	if notice != "" {
 		text = "✅ " + notice + "\n\n" + text
 	}
@@ -566,6 +596,7 @@ func (h *Handler) sendAdminProductCard(ctx context.Context, chatID, productID in
 			tgbotapi.NewInlineKeyboardButtonData("💰 Ціна продажу", fmt.Sprintf("admin:action:sell:%d", productID)),
 			tgbotapi.NewInlineKeyboardButtonData("📦 Залишок", fmt.Sprintf("admin:action:stock:%d", productID)),
 		),
+		tgbotapi.NewInlineKeyboardRow(visibility),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
 	)
 	return h.sendText(chatID, text, &markup)

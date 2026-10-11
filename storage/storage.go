@@ -225,6 +225,14 @@ func (s *Storage) UpdateProductStock(ctx context.Context, productID int64, stock
 	return err
 }
 
+// SetProductActive hides a product from the menu and sales (false) or
+// returns it (true). Products are never hard-deleted because past sales and
+// reports reference them.
+func (s *Storage) SetProductActive(ctx context.Context, productID int64, active bool) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE products SET is_active = ? WHERE id = ?`, boolToInt(active), productID)
+	return err
+}
+
 func (s *Storage) IncreaseProductStock(ctx context.Context, productID int64, delta float64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE products SET stock = stock + ? WHERE id = ?`, delta, productID)
 	return err
