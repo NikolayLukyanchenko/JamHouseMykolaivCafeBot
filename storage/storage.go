@@ -220,6 +220,11 @@ func (s *Storage) UpdateProductSellPrice(ctx context.Context, productID int64, s
 	return err
 }
 
+func (s *Storage) UpdateProductUnit(ctx context.Context, productID int64, unit string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE products SET unit = ? WHERE id = ?`, unit, productID)
+	return err
+}
+
 func (s *Storage) UpdateProductStock(ctx context.Context, productID int64, stock float64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE products SET stock = ? WHERE id = ?`, stock, productID)
 	return err
