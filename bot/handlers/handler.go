@@ -69,6 +69,14 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 			return h.sendText(message.Chat.ID, "Адмін-панель доступна лише адміністратору.", nil)
 		}
 		return h.sendAdminPanel(message.Chat.ID)
+	case "backup", "dbinfo":
+		if !allowed || !hasAnyRole(user.Role, models.RoleAdmin) {
+			return h.sendText(message.Chat.ID, "Команда доступна лише адміністратору.", nil)
+		}
+		if message.Command() == "backup" {
+			return h.sendBackup(ctx, message.Chat.ID)
+		}
+		return h.sendDBInfo(ctx, message.Chat.ID)
 	case "report":
 		if !allowed {
 			return h.sendText(message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)

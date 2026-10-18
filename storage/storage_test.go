@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -262,5 +264,72 @@ func TestDailyReportBreakdown(t *testing.T) {
 	}
 	if mine.Checks != 1 || mine.GrandTotal != 140 || len(mine.Items) != 1 || mine.Items[0].Qty != 2 {
 		t.Fatalf("per-user summary must include only own sales: %+v", mine)
+	}
+}
+
+func TestBackupProducesImportableCopy(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := New(filepath.Join(dir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := store.CreateProduct(ctx, models.Product{Name: "Лате", Category: models.CategoryDrinks, CostPrice: 30, SellPrice: 70, Unit: "чашка", Stock: 10, IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.RecordSale(ctx, 1, models.PaymentCash, []models.OrderItem{{ProductID: id, Qty: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	want, err := store.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "bot-jam-house-cafe.db")
+	if err := store.Backup(ctx, dest); err != nil {
+		t.Fatalf("Backup() error: %v", err)
+	}
+	header := make([]byte, 20)
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadFull(f, header)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bytes 18-19 of the SQLite header are 2 for WAL mode.
+	if header[18] != 2 || header[19] != 2 {
+		t.Fatalf("backup is not in WAL mode: %v", header[18:20])
+	}
+	if _, err := os.Stat(dest + "-wal"); err == nil {
+		if fi, _ := os.Stat(dest + "-wal"); fi.Size() > 0 {
+			t.Fatal("WAL must be checkpointed into the main file")
+		}
+	}
+
+	copyStore, err := New(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyStore.Close()
+	got, err := copyStore.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want || got.Sales != 1 || got.Products != 1 {
+		t.Fatalf("backup stats %v, want %v", got, want)
+	}
+	if err := store.Backup(ctx, dest); err == nil {
+		t.Fatal("backup must not overwrite an existing file")
 	}
 }
