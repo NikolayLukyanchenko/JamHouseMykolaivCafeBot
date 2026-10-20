@@ -13,6 +13,8 @@ import (
 type Config struct {
 	TelegramBotToken string
 	DBPath           string
+	TursoURL         string
+	TursoAuthToken   string
 	AdminIDs         []int64
 	TelegramDebug    bool
 }
@@ -27,6 +29,11 @@ func Load() (Config, error) {
 		TelegramBotToken: strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		DBPath:           strings.TrimSpace(os.Getenv("DB_PATH")),
 		TelegramDebug:    strings.ToLower(strings.TrimSpace(os.Getenv("TELEGRAM_DEBUG"))) == "true",
+		TursoURL:         strings.TrimSpace(os.Getenv("TURSO_DATABASE_URL")),
+		TursoAuthToken:   strings.TrimSpace(os.Getenv("TURSO_AUTH_TOKEN")),
+	}
+	if cfg.TursoURL != "" && cfg.TursoAuthToken == "" && strings.HasPrefix(cfg.TursoURL, "libsql://") {
+		return Config{}, fmt.Errorf("для TURSO_DATABASE_URL потрібен TURSO_AUTH_TOKEN")
 	}
 	if cfg.DBPath == "" {
 		cfg.DBPath = "data.db"
@@ -41,8 +48,12 @@ func Load() (Config, error) {
 	cfg.AdminIDs = adminIDs
 
 	// Log startup summary without secrets.
-	log.Printf("[config] DB_PATH=%s ADMIN_IDS_COUNT=%d TELEGRAM_DEBUG=%v",
-		cfg.DBPath, len(cfg.AdminIDs), cfg.TelegramDebug)
+	database := "sqlite " + cfg.DBPath
+	if cfg.TursoURL != "" {
+		database = "turso " + cfg.TursoURL
+	}
+	log.Printf("[config] DB=%s ADMIN_IDS_COUNT=%d TELEGRAM_DEBUG=%v",
+		database, len(cfg.AdminIDs), cfg.TelegramDebug)
 
 	return cfg, nil
 }

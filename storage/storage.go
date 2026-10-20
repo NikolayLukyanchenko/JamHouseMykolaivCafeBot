@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
@@ -16,9 +17,11 @@ import (
 const sqliteDateTimeLayout = "2006-01-02 15:04:05"
 
 type Storage struct {
-	db *sql.DB
+	db     *sql.DB
+	remote bool
 }
 
+// New opens a local SQLite file.
 func New(path string) (*Storage, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -28,13 +31,46 @@ func New(path string) (*Storage, error) {
 	return &Storage{db: db}, nil
 }
 
+// NewTurso connects to a Turso (libSQL) database, e.g.
+// libsql://bot-jam-house-cafe-<org>.turso.io. The token may be empty only
+// for a local libSQL server.
+func NewTurso(url, authToken string) (*Storage, error) {
+	var opts []libsql.Option
+	if authToken != "" {
+		opts = append(opts, libsql.WithAuthToken(authToken))
+	}
+	connector, err := libsql.NewConnector(url, opts...)
+	if err != nil {
+		return nil, err
+	}
+	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(1)
+	return &Storage{db: db, remote: true}, nil
+}
+
+// Remote reports whether the database is Turso rather than a local file.
+func (s *Storage) Remote() bool {
+	return s.remote
+}
+
+// Ping checks that the database is reachable and the token is valid. It runs
+// a real query because the libSQL driver's own ping is never called by
+// database/sql and opening a connection does not touch the network.
+func (s *Storage) Ping(ctx context.Context) error {
+	var one int
+	return s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+}
+
 func (s *Storage) Close() error {
 	return s.db.Close()
 }
 
 func (s *Storage) Init(ctx context.Context) error {
-	statements := []string{
-		`PRAGMA foreign_keys = ON;`,
+	var statements []string
+	if !s.remote {
+		statements = append(statements, `PRAGMA foreign_keys = ON;`)
+	}
+	statements = append(statements,
 		`CREATE TABLE IF NOT EXISTS users (
 user_id INTEGER PRIMARY KEY,
 username TEXT,
@@ -83,7 +119,7 @@ name TEXT NOT NULL,
 unit TEXT NOT NULL DEFAULT '',
 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
-	}
+	)
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return err
@@ -217,6 +253,11 @@ func (s *Storage) UpdateProductCostPrice(ctx context.Context, productID int64, c
 
 func (s *Storage) UpdateProductSellPrice(ctx context.Context, productID int64, sellPrice float64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE products SET sell_price = ? WHERE id = ?`, sellPrice, productID)
+	return err
+}
+
+func (s *Storage) UpdateProductUnit(ctx context.Context, productID int64, unit string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE products SET unit = ? WHERE id = ?`, unit, productID)
 	return err
 }
 
@@ -506,6 +547,51 @@ func (s *Storage) UpdatePurchaseItem(ctx context.Context, itemID int64, name, un
 
 func (s *Storage) DeletePurchaseItem(ctx context.Context, itemID int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM purchase_items WHERE id = ?`, itemID)
+	return err
+}
+
+// Stats counts the main records; used to verify a migration.
+type Stats struct {
+	Users, Products, Sales, SaleItems, PurchaseItems int
+}
+
+func (s *Storage) Stats(ctx context.Context) (Stats, error) {
+	var st Stats
+	err := s.db.QueryRowContext(ctx, `SELECT
+(SELECT COUNT(*) FROM users),
+(SELECT COUNT(*) FROM products),
+(SELECT COUNT(*) FROM sales),
+(SELECT COUNT(*) FROM sale_items),
+(SELECT COUNT(*) FROM purchase_items)`).Scan(&st.Users, &st.Products, &st.Sales, &st.SaleItems, &st.PurchaseItems)
+	return st, err
+}
+
+func (st Stats) String() string {
+	return fmt.Sprintf("users=%d products=%d sales=%d sale_items=%d purchase_items=%d", st.Users, st.Products, st.Sales, st.SaleItems, st.PurchaseItems)
+}
+
+// Backup writes a consistent copy of the local SQLite database to dest (which
+// must not exist) in WAL mode, ready for `turso db import`.
+func (s *Storage) Backup(ctx context.Context, dest string) error {
+	if s.remote {
+		return errors.New("резервна копія файлом доступна лише для локальної SQLite-бази")
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		return err
+	}
+	copyDB, err := sql.Open("sqlite", dest)
+	if err != nil {
+		return err
+	}
+	defer copyDB.Close()
+	var mode string
+	if err := copyDB.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("не вдалося перевести копію в режим WAL: %s", mode)
+	}
+	_, err = copyDB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	return err
 }
 

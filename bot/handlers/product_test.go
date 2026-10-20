@@ -53,3 +53,28 @@ func TestHideAndRestoreProduct(t *testing.T) {
 		t.Fatalf("restored product must be back in the menu: %q", got)
 	}
 }
+
+func TestEditProductUnit(t *testing.T) {
+	h, fake := newTestHandler(t)
+	ctx := context.Background()
+	id, err := h.storage.CreateProduct(ctx, models.Product{Name: "Сік", Category: models.CategoryDrinks, CostPrice: 10, SellPrice: 30, Unit: "шт", Stock: 5, IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendCallbackUpdate(t, h, fmt.Sprintf("admin:edit_select:%d", id))
+	if got := fake.last(t).Markup; !strings.Contains(got, fmt.Sprintf("admin:action:unit:%d", id)) {
+		t.Fatalf("card must offer editing the unit: %q", got)
+	}
+	sendCallbackUpdate(t, h, fmt.Sprintf("admin:action:unit:%d", id))
+	if got := fake.last(t); !strings.Contains(got.Text, "Зараз: «шт»") || !strings.Contains(got.Markup, "nav:cancel") {
+		t.Fatalf("unexpected unit prompt: %+v", got)
+	}
+	sendTextUpdate(t, h, "склянка 250 мл")
+	if got := fake.last(t).Text; !strings.Contains(got, "Одиницю виміру оновлено") || !strings.Contains(got, "Одиниця: склянка 250 мл") {
+		t.Fatalf("unexpected card after update: %q", got)
+	}
+	product, err := h.storage.GetProduct(ctx, id)
+	if err != nil || product.Unit != "склянка 250 мл" {
+		t.Fatalf("unit not saved: %+v %v", product, err)
+	}
+}

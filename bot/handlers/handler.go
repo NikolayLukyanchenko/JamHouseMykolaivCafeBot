@@ -69,6 +69,14 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 			return h.sendText(message.Chat.ID, "Адмін-панель доступна лише адміністратору.", nil)
 		}
 		return h.sendAdminPanel(message.Chat.ID)
+	case "backup", "dbinfo":
+		if !allowed || !hasAnyRole(user.Role, models.RoleAdmin) {
+			return h.sendText(message.Chat.ID, "Команда доступна лише адміністратору.", nil)
+		}
+		if message.Command() == "backup" {
+			return h.sendBackup(ctx, message.Chat.ID)
+		}
+		return h.sendDBInfo(ctx, message.Chat.ID)
 	case "report":
 		if !allowed {
 			return h.sendText(message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)
@@ -243,6 +251,15 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 			return err
 		}
 		return h.sendAdminProductCard(ctx, message.Chat.ID, s.EditingProductID, "Ціну продажу оновлено.")
+	case stateAwaitEditUnit:
+		if text == "" {
+			return h.sendPrompt(message.Chat.ID, "Одиниця виміру не може бути порожньою. Введіть, наприклад: шт, чашка, порція, 100г.")
+		}
+		h.sessions.ClearState(user.UserID)
+		if err := h.storage.UpdateProductUnit(ctx, s.EditingProductID, text); err != nil {
+			return err
+		}
+		return h.sendAdminProductCard(ctx, message.Chat.ID, s.EditingProductID, "Одиницю виміру оновлено.")
 	case stateAwaitSetStock:
 		value, err := utils.ParseNonNegativeFloat(text)
 		if err != nil {
@@ -352,6 +369,13 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		case "sell":
 			s.State = stateAwaitEditSell
 			return h.sendPrompt(callback.Message.Chat.ID, "Введіть нову ціну продажу товару.")
+		case "unit":
+			product, err := h.storage.GetProduct(ctx, productID)
+			if err != nil {
+				return err
+			}
+			s.State = stateAwaitEditUnit
+			return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Зараз: «%s». Введіть нову одиницю виміру (наприклад: шт, чашка, банка, порція, 100г).", product.Unit))
 		case "stock":
 			s.State = stateAwaitSetStock
 			return h.sendPrompt(callback.Message.Chat.ID, "Введіть новий фактичний залишок товару.")
@@ -596,6 +620,7 @@ func (h *Handler) sendAdminProductCard(ctx context.Context, chatID, productID in
 			tgbotapi.NewInlineKeyboardButtonData("💰 Ціна продажу", fmt.Sprintf("admin:action:sell:%d", productID)),
 			tgbotapi.NewInlineKeyboardButtonData("📦 Залишок", fmt.Sprintf("admin:action:stock:%d", productID)),
 		),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📏 Одиниця виміру", fmt.Sprintf("admin:action:unit:%d", productID))),
 		tgbotapi.NewInlineKeyboardRow(visibility),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
 	)

@@ -20,6 +20,7 @@ const (
 	stateAwaitEditName      = "await_edit_name"
 	stateAwaitEditCost      = "await_edit_cost"
 	stateAwaitEditSell      = "await_edit_sell"
+	stateAwaitEditUnit      = "await_edit_unit"
 	stateAwaitSetStock      = "await_set_stock"
 	stateAwaitIncreaseStock = "await_increase_stock"
 )

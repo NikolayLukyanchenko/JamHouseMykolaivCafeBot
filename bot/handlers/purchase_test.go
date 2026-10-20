@@ -40,6 +40,16 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "getMe":
 		fmt.Fprint(w, `{"ok":true,"result":{"id":999,"is_bot":true,"first_name":"Bot","username":"test_bot"}}`)
+	case "sendDocument":
+		_ = r.ParseMultipartForm(32 << 20)
+		var size int64
+		if file, header, err := r.FormFile("document"); err == nil {
+			size = header.Size
+			file.Close()
+		}
+		f.sent = append(f.sent, sentMessage{Method: method, ChatID: r.FormValue("chat_id"), Text: r.FormValue("caption"), Markup: fmt.Sprint(size)})
+		f.nextID++
+		fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d,"date":0,"chat":{"id":%s,"type":"private"}}}`, f.nextID, r.FormValue("chat_id"))
 	case "sendMessage", "editMessageText":
 		chatID := r.FormValue("chat_id")
 		if to, ok := f.migrated[chatID]; ok {
@@ -101,7 +111,12 @@ func newTestHandler(t *testing.T) (*Handler, *fakeTelegram) {
 
 func sendTextUpdate(t *testing.T, h *Handler, text string) {
 	t.Helper()
-	update := tgbotapi.Update{Message: &tgbotapi.Message{MessageID: 1, From: &tgbotapi.User{ID: 1, FirstName: "Ольга"}, Chat: &tgbotapi.Chat{ID: 1, Type: "private"}, Text: text}}
+	sendTextUpdateWithEntities(t, h, text, nil)
+}
+
+func sendTextUpdateWithEntities(t *testing.T, h *Handler, text string, entities []tgbotapi.MessageEntity) {
+	t.Helper()
+	update := tgbotapi.Update{Message: &tgbotapi.Message{MessageID: 1, From: &tgbotapi.User{ID: 1, FirstName: "Ольга"}, Chat: &tgbotapi.Chat{ID: 1, Type: "private"}, Text: text, Entities: entities}}
 	if err := h.HandleUpdate(context.Background(), update); err != nil {
 		t.Fatalf("message %q: %v", text, err)
 	}

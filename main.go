@@ -21,11 +21,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	store, err := storage.New(cfg.DBPath)
+	var store *storage.Storage
+	if cfg.TursoURL != "" {
+		store, err = storage.NewTurso(cfg.TursoURL, cfg.TursoAuthToken)
+	} else {
+		store, err = storage.New(cfg.DBPath)
+	}
 	if err != nil {
 		log.Fatalf("не вдалося відкрити базу даних: %v", err)
 	}
 	defer store.Close()
+	if err := store.Ping(ctx); err != nil {
+		log.Fatalf("база даних недоступна (перевірте TURSO_DATABASE_URL / TURSO_AUTH_TOKEN або DB_PATH): %v", err)
+	}
 
 	if err := store.Init(ctx); err != nil {
 		log.Fatalf("не вдалося ініціалізувати базу даних: %v", err)
@@ -33,6 +41,12 @@ func main() {
 
 	if err := store.SeedAdmins(ctx, cfg.AdminIDs); err != nil {
 		log.Fatalf("не вдалося додати адміністраторів: %v", err)
+	}
+
+	if stats, err := store.Stats(ctx); err != nil {
+		log.Printf("[storage] не вдалося порахувати записи: %v", err)
+	} else {
+		log.Printf("[storage] %s", stats)
 	}
 
 	bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
