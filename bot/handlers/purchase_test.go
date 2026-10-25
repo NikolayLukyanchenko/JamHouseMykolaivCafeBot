@@ -27,6 +27,7 @@ type sentMessage struct {
 type fakeTelegram struct {
 	mu          sync.Mutex
 	sent        []sentMessage
+	answers     []string // callback toasts; "!" prefix marks an alert
 	unreachable map[string]bool
 	migrated    map[string]string // old group chat ID -> supergroup ID
 	nextID      int
@@ -64,9 +65,25 @@ func (f *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.nextID++
 		resp, _ := json.Marshal(map[string]any{"ok": true, "result": map[string]any{"message_id": f.nextID, "date": 0, "chat": map[string]any{"id": json.Number(chatID), "type": "private"}}})
 		w.Write(resp)
+	case "answerCallbackQuery":
+		answer := r.FormValue("text")
+		if r.FormValue("show_alert") == "true" {
+			answer = "!" + answer
+		}
+		f.answers = append(f.answers, answer)
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
 	default:
 		fmt.Fprint(w, `{"ok":true,"result":true}`)
 	}
+}
+
+func (f *fakeTelegram) lastAnswer() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.answers) == 0 {
+		return ""
+	}
+	return f.answers[len(f.answers)-1]
 }
 
 func (f *fakeTelegram) last(t *testing.T) sentMessage {

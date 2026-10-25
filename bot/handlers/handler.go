@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -114,8 +113,8 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 	}
 
 	switch strings.TrimSpace(message.Text) {
-	case "Записати продаж", "Калькулятор замовлення":
-		return h.sendCartAndCategories(message.Chat.ID, user.UserID)
+	case keyboards.SaleButton, "Записати продаж", "Калькулятор замовлення":
+		return h.openPOS(ctx, message.Chat.ID, user.UserID)
 	case "Меню для клієнтів":
 		return h.sendCustomerMenu(ctx, message.Chat.ID)
 	case "Мої продажі за сьогодні":
@@ -147,21 +146,6 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 	}
 
 	switch s.State {
-	case stateAwaitOrderQty:
-		qty, err := utils.ParsePositiveFloat(text)
-		if err != nil {
-			return h.sendPrompt(message.Chat.ID, "Некоректна кількість. Введіть число більше нуля.")
-		}
-		product, err := h.storage.GetProduct(ctx, s.SelectedProductID)
-		if err != nil {
-			return err
-		}
-		if product.Stock < qty+h.qtyInCart(user.UserID, product.ID) {
-			return h.sendPrompt(message.Chat.ID, fmt.Sprintf("Недостатньо залишку. Доступно лише %s %s.", utils.FormatQuantity(product.Stock), product.Unit))
-		}
-		h.sessions.AddToCart(user.UserID, models.OrderItem{ProductID: product.ID, Name: product.Name, Category: product.Category, Qty: qty, SellPrice: product.SellPrice, CostPrice: product.CostPrice, Unit: product.Unit})
-		h.sessions.ClearState(user.UserID)
-		return h.sendCartSummary(message.Chat.ID, user.UserID)
 	case stateAwaitPurchaseNote:
 		h.sessions.ClearState(user.UserID)
 		s.Purchase.Note = text
@@ -300,9 +284,13 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		_ = h.answerCallback(callback.ID, "Доступ заборонено")
 		return h.sendText(callback.Message.Chat.ID, "Доступ заборонено. Зверніться до адміністратора.", nil)
 	}
+	data := callback.Data
+	if strings.HasPrefix(data, "pos:") {
+		// The checkout screen answers with its own short toasts.
+		return h.handlePOSCallback(ctx, user, callback)
+	}
 	_ = h.answerCallback(callback.ID, "Готово")
 
-	data := callback.Data
 	if strings.HasPrefix(data, "admin:") && !hasAnyRole(user.Role, models.RoleAdmin) {
 		return h.sendText(callback.Message.Chat.ID, "Адмін-панель доступна лише адміністратору.", nil)
 	}
@@ -402,56 +390,9 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 		default:
 			return nil
 		}
-	case data == "cart:add_more":
-		return h.sendCartAndCategories(callback.Message.Chat.ID, user.UserID)
-	case data == "cart:show":
-		return h.sendCartSummary(callback.Message.Chat.ID, user.UserID)
-	case data == "cart:clear":
-		return h.sendText(callback.Message.Chat.ID, "Очистити кошик?", keyboards.ConfirmClearCart())
-	case data == "cart:confirm_clear":
-		h.sessions.ClearCart(user.UserID)
-		return h.sendText(callback.Message.Chat.ID, "Кошик очищено.", nil)
-	case data == "cart:pay":
-		cart := h.sessions.Cart(user.UserID)
-		if len(cart) == 0 {
-			return h.sendText(callback.Message.Chat.ID, "Кошик порожній. Додайте товари перед оплатою.", nil)
-		}
-		return h.sendText(callback.Message.Chat.ID, fmt.Sprintf("До сплати: %s\nОберіть спосіб оплати.", utils.FormatMoney(cartTotal(cart))), keyboards.PaymentMethods())
-	case strings.HasPrefix(data, "cart:payment:"):
-		paymentMethod := strings.TrimPrefix(data, "cart:payment:")
-		s := h.sessions.get(user.UserID)
-		s.PaymentMethod = paymentMethod
-		paymentLabel := "Готівка"
-		if paymentMethod == models.PaymentCard {
-			paymentLabel = "Карта"
-		}
-		return h.sendText(callback.Message.Chat.ID, fmt.Sprintf("Підтвердити продаж на суму %s (%s)?", utils.FormatMoney(cartTotal(h.sessions.Cart(user.UserID))), paymentLabel), keyboards.ConfirmSale())
-	case data == "cart:confirm_sale":
-		s := h.sessions.get(user.UserID)
-		sale, items, err := h.storage.RecordSale(ctx, user.UserID, s.PaymentMethod, s.Cart)
-		if err != nil {
-			return h.sendText(callback.Message.Chat.ID, fmt.Sprintf("Не вдалося провести продаж: %v", err), nil)
-		}
-		log.Printf("Продаж #%d: user=%d total=%.2f payment=%s items=%d", sale.ID, user.UserID, sale.Total, sale.PaymentMethod, len(items))
-		h.sessions.ClearCart(user.UserID)
-		h.sessions.ClearState(user.UserID)
-		return h.sendText(callback.Message.Chat.ID, h.saleReceiptText(sale, items), replyKeyboard(user.Role))
-	case strings.HasPrefix(data, "cart:category:"):
-		category := strings.TrimPrefix(data, "cart:category:")
-		return h.sendProductsForCategory(ctx, callback.Message.Chat.ID, category)
-	case strings.HasPrefix(data, "cart:product:"):
-		productID, err := strconv.ParseInt(strings.TrimPrefix(data, "cart:product:"), 10, 64)
-		if err != nil {
-			return err
-		}
-		product, err := h.storage.GetProduct(ctx, productID)
-		if err != nil {
-			return err
-		}
-		s := h.sessions.get(user.UserID)
-		s.SelectedProductID = productID
-		s.State = stateAwaitOrderQty
-		return h.sendPrompt(callback.Message.Chat.ID, fmt.Sprintf("Введіть кількість для товару «%s». Доступно: %s %s.", product.Name, utils.FormatQuantity(product.Stock), product.Unit))
+	case strings.HasPrefix(data, "cart:"):
+		// Buttons of the old step-by-step sale screen still in chat history.
+		return h.openPOS(ctx, callback.Message.Chat.ID, user.UserID)
 	case strings.HasPrefix(data, "my:day:"):
 		day, err := parseDay(strings.TrimPrefix(data, "my:day:"))
 		if err != nil {
@@ -493,34 +434,6 @@ func (h *Handler) sendWelcome(chatID int64, user models.User) error {
 
 func (h *Handler) sendAdminPanel(chatID int64) error {
 	return h.sendText(chatID, "Адмін-панель: оберіть потрібну дію.", keyboards.AdminPanel())
-}
-
-func (h *Handler) sendCartAndCategories(chatID, userID int64) error {
-	text := "🧮 Калькулятор замовлення\n\nОберіть категорію товарів."
-	cart := h.sessions.Cart(userID)
-	if len(cart) > 0 {
-		text = h.cartSummaryText(cart) + "\n\nОберіть категорію, щоб додати ще товар."
-	}
-	return h.sendText(chatID, text, keyboards.Categories("cart:category:"))
-}
-
-func (h *Handler) sendProductsForCategory(ctx context.Context, chatID int64, category string) error {
-	products, err := h.storage.ListProductsByCategory(ctx, category)
-	if err != nil {
-		return err
-	}
-	if len(products) == 0 {
-		return h.sendText(chatID, "У цій категорії поки немає активних товарів.", keyboards.Categories("cart:category:"))
-	}
-	return h.sendText(chatID, fmt.Sprintf("Категорія: %s\nОберіть товар.", category), keyboards.ProductButtons(products, "cart:product:", "cart:add_more"))
-}
-
-func (h *Handler) sendCartSummary(chatID, userID int64) error {
-	cart := h.sessions.Cart(userID)
-	if len(cart) == 0 {
-		return h.sendText(chatID, "Кошик порожній. Додайте товари до замовлення.", keyboards.Categories("cart:category:"))
-	}
-	return h.sendText(chatID, h.cartSummaryText(cart), keyboards.CartActions())
 }
 
 func (h *Handler) sendCustomerMenu(ctx context.Context, chatID int64) error {
@@ -627,16 +540,6 @@ func (h *Handler) sendAdminProductCard(ctx context.Context, chatID, productID in
 	return h.sendText(chatID, text, &markup)
 }
 
-func (h *Handler) cartSummaryText(cart []models.OrderItem) string {
-	var builder strings.Builder
-	builder.WriteString("🧾 Поточне замовлення\n\n")
-	for _, item := range cart {
-		builder.WriteString(fmt.Sprintf("• %s — %s %s × %s = %s\n", item.Name, utils.FormatQuantity(item.Qty), item.Unit, utils.FormatMoney(item.SellPrice), utils.FormatMoney(item.Qty*item.SellPrice)))
-	}
-	builder.WriteString(fmt.Sprintf("\n💰 Разом: %s", utils.FormatMoney(cartTotal(cart))))
-	return builder.String()
-}
-
 func (h *Handler) saleReceiptText(sale models.Sale, items []models.SaleItem) string {
 	var builder strings.Builder
 	builder.WriteString(fmt.Sprintf("✅ Продаж успішно записано. Чек #%d\n\n", sale.ID))
@@ -713,7 +616,7 @@ func (h *Handler) startPurchaseScreenKeepingDraft(ctx context.Context, chatID, u
 
 func isMenuButton(text string) bool {
 	switch strings.TrimSpace(text) {
-	case "Записати продаж", "Калькулятор замовлення", "Меню для клієнтів", "Мої продажі за сьогодні",
+	case keyboards.SaleButton, "Записати продаж", "Калькулятор замовлення", "Меню для клієнтів", "Мої продажі за сьогодні",
 		"Залишки товарів", "Замовити закупку", "Відправити звіт":
 		return true
 	}

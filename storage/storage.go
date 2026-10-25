@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +109,16 @@ sell_price REAL NOT NULL,
 cost_price REAL NOT NULL,
 FOREIGN KEY(sale_id) REFERENCES sales(id),
 FOREIGN KEY(product_id) REFERENCES products(id)
+);`,
+		`CREATE TABLE IF NOT EXISTS voided_sales (
+sale_id INTEGER PRIMARY KEY,
+user_id INTEGER NOT NULL,
+voided_by INTEGER NOT NULL,
+total REAL NOT NULL,
+payment_method TEXT NOT NULL,
+items TEXT NOT NULL,
+sold_at DATETIME NOT NULL,
+voided_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
 		`CREATE TABLE IF NOT EXISTS settings (
 key TEXT PRIMARY KEY,
@@ -411,6 +422,11 @@ WHERE created_at >= ? AND created_at < ?
 	}
 	report.Items = items
 
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(total), 0) FROM voided_sales WHERE sold_at >= ? AND sold_at < ?`,
+		formatDBTime(start), formatDBTime(end)).Scan(&report.VoidedChecks, &report.VoidedTotal); err != nil {
+		return report, err
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 SELECT s.user_id, COALESCE(u.full_name, ''), COUNT(*),
 COALESCE(SUM(CASE WHEN s.payment_method = ? THEN s.total END), 0),
@@ -471,6 +487,108 @@ ORDER BY s.created_at, s.id, si.id
 		}
 	}
 	return checks, rows.Err()
+}
+
+// TopProducts returns active products ordered by quantity sold since the
+// given time, then by name, so the list is filled even with few sales.
+func (s *Storage) TopProducts(ctx context.Context, since time.Time, limit int) ([]models.Product, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT p.id, p.name, p.category, p.cost_price, p.sell_price, p.unit, p.stock, p.is_active, p.created_at
+FROM products p
+LEFT JOIN (
+	SELECT si.product_id AS product_id, SUM(si.qty) AS qty
+	FROM sale_items si JOIN sales s ON s.id = si.sale_id
+	WHERE s.created_at >= ?
+	GROUP BY si.product_id
+) sold ON sold.product_id = p.id
+WHERE p.is_active = 1
+ORDER BY COALESCE(sold.qty, 0) DESC, p.name
+LIMIT ?
+`, formatDBTime(since), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanProducts(rows)
+}
+
+var (
+	ErrSaleNotFound  = errors.New("чек не знайдено або вже скасовано")
+	ErrVoidForbidden = errors.New("скасувати чек може лише продавець, який його провів, або адміністратор")
+	ErrVoidTooLate   = errors.New("час для скасування чеку минув")
+)
+
+// VoidSale cancels a sale: returns its items to stock, records it in
+// voided_sales and removes it from sales, so reports no longer count it.
+// Unless asAdmin, only the seller may void, and only within window.
+func (s *Storage) VoidSale(ctx context.Context, saleID, userID int64, asAdmin bool, window time.Duration, now time.Time) (models.Sale, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return models.Sale{}, err
+	}
+	defer tx.Rollback()
+
+	var sale models.Sale
+	var createdAt string
+	err = tx.QueryRowContext(ctx, `SELECT id, user_id, total, cost_total, payment_method, created_at FROM sales WHERE id = ?`, saleID).
+		Scan(&sale.ID, &sale.UserID, &sale.Total, &sale.CostTotal, &sale.PaymentMethod, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return models.Sale{}, ErrSaleNotFound
+	}
+	if err != nil {
+		return models.Sale{}, err
+	}
+	sale.CreatedAt = parseDBTime(createdAt)
+	if !asAdmin {
+		if sale.UserID != userID {
+			return models.Sale{}, ErrVoidForbidden
+		}
+		if now.Sub(sale.CreatedAt) > window {
+			return models.Sale{}, ErrVoidTooLate
+		}
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT product_id, name, qty FROM sale_items WHERE sale_id = ? ORDER BY id`, saleID)
+	if err != nil {
+		return models.Sale{}, err
+	}
+	type line struct {
+		productID int64
+		name      string
+		qty       float64
+	}
+	var lines []line
+	for rows.Next() {
+		var l line
+		if err := rows.Scan(&l.productID, &l.name, &l.qty); err != nil {
+			rows.Close()
+			return models.Sale{}, err
+		}
+		lines = append(lines, l)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return models.Sale{}, err
+	}
+
+	names := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if _, err := tx.ExecContext(ctx, `UPDATE products SET stock = stock + ? WHERE id = ?`, l.qty, l.productID); err != nil {
+			return models.Sale{}, err
+		}
+		names = append(names, fmt.Sprintf("%s ×%s", l.name, strconv.FormatFloat(l.qty, 'f', -1, 64)))
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO voided_sales (sale_id, user_id, voided_by, total, payment_method, items, sold_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sale.ID, sale.UserID, userID, sale.Total, sale.PaymentMethod, strings.Join(names, ", "), formatDBTime(sale.CreatedAt)); err != nil {
+		return models.Sale{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sale_items WHERE sale_id = ?`, saleID); err != nil {
+		return models.Sale{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sales WHERE id = ?`, saleID); err != nil {
+		return models.Sale{}, err
+	}
+	return sale, tx.Commit()
 }
 
 // soldItems aggregates sold quantities, revenue and cost per product in

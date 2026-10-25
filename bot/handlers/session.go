@@ -8,7 +8,6 @@ import (
 
 const (
 	stateNone               = ""
-	stateAwaitOrderQty      = "await_order_qty"
 	stateAwaitPurchaseNote  = "await_purchase_note"
 	stateAwaitPItemsAdd     = "await_purchase_items_add"
 	stateAwaitPItemEdit     = "await_purchase_item_edit"
@@ -35,13 +34,12 @@ type productDraft struct {
 }
 
 type session struct {
-	State             string
-	SelectedProductID int64
-	EditingProductID  int64
-	PaymentMethod     string
-	DraftProduct      productDraft
-	Cart              []models.OrderItem
+	State            string
+	EditingProductID int64
+	DraftProduct     productDraft
+	Cart             []models.OrderItem
 
+	PosTab                string // active tab of the checkout screen
 	EditingPurchaseItemID int64
 	Purchase              purchaseDraft
 }
@@ -79,8 +77,6 @@ func (m *SessionManager) SetState(userID int64, state string) {
 func (m *SessionManager) ClearState(userID int64) {
 	s := m.get(userID)
 	s.State = stateNone
-	s.SelectedProductID = 0
-	s.PaymentMethod = ""
 }
 
 func (m *SessionManager) ResetDraft(userID int64) {
@@ -98,6 +94,21 @@ func (m *SessionManager) AddToCart(userID int64, item models.OrderItem) {
 	s.Cart = append(s.Cart, item)
 }
 
+// AdjustCart changes an item's quantity by delta and drops it at zero.
+func (m *SessionManager) AdjustCart(userID, productID int64, delta float64) {
+	s := m.get(userID)
+	for i := range s.Cart {
+		if s.Cart[i].ProductID != productID {
+			continue
+		}
+		s.Cart[i].Qty += delta
+		if s.Cart[i].Qty <= 0 {
+			s.Cart = append(s.Cart[:i], s.Cart[i+1:]...)
+		}
+		return
+	}
+}
+
 func (m *SessionManager) Cart(userID int64) []models.OrderItem {
 	s := m.get(userID)
 	cart := make([]models.OrderItem, len(s.Cart))
@@ -108,7 +119,6 @@ func (m *SessionManager) Cart(userID int64) []models.OrderItem {
 func (m *SessionManager) ClearCart(userID int64) {
 	s := m.get(userID)
 	s.Cart = nil
-	s.PaymentMethod = ""
 }
 
 func (m *SessionManager) ResetPurchase(userID int64) {

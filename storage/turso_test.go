@@ -298,6 +298,27 @@ func TestTursoEndToEnd(t *testing.T) {
 		t.Fatalf("hidden product listed: %+v %v", active, err)
 	}
 
+	top, err := store.TopProducts(ctx, now.AddDate(0, 0, -14), 9)
+	if err != nil || len(top) != 0 {
+		t.Fatalf("TopProducts (only hidden product): %+v %v", top, err)
+	}
+	if err := store.SetProductActive(ctx, latte, true); err != nil {
+		t.Fatal(err)
+	}
+	extra, _, err := store.RecordSale(ctx, 2, models.PaymentCash, []models.OrderItem{{ProductID: latte, Qty: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.VoidSale(ctx, extra.ID, 2, false, 3*time.Minute, time.Now()); err != nil {
+		t.Fatalf("VoidSale: %v", err)
+	}
+	if p, _ := store.GetProduct(ctx, latte); p.Stock != 8 {
+		t.Fatalf("void must return stock: %v", p.Stock)
+	}
+	if err := store.SetProductActive(ctx, latte, false); err != nil {
+		t.Fatal(err)
+	}
+
 	stats, err := store.Stats(ctx)
 	if err != nil {
 		t.Fatalf("Stats: %v", err)

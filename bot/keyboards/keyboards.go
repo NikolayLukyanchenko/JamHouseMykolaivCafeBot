@@ -8,9 +8,12 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+// SaleButton opens the checkout screen.
+const SaleButton = "🧾 Продаж"
+
 func MainMenu(role string) tgbotapi.ReplyKeyboardMarkup {
 	rows := [][]tgbotapi.KeyboardButton{
-		{tgbotapi.NewKeyboardButton("Записати продаж"), tgbotapi.NewKeyboardButton("Калькулятор замовлення")},
+		{tgbotapi.NewKeyboardButton(SaleButton)},
 		{tgbotapi.NewKeyboardButton("Меню для клієнтів"), tgbotapi.NewKeyboardButton("Мої продажі за сьогодні")},
 		{tgbotapi.NewKeyboardButton("Залишки товарів"), tgbotapi.NewKeyboardButton("Замовити закупку")},
 	}
@@ -59,45 +62,6 @@ func ProductButtons(products []models.Product, prefix string, backData string) t
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
 	)
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
-}
-
-func CartActions() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("➕ Додати ще", "cart:add_more")),
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🗑 Очистити", "cart:clear"),
-			tgbotapi.NewInlineKeyboardButtonData("✅ Оплатити", "cart:pay"),
-		),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
-	)
-}
-
-func ConfirmClearCart() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Так, очистити", "cart:confirm_clear"),
-			tgbotapi.NewInlineKeyboardButtonData("Ні, повернутись", "cart:show"),
-		),
-	)
-}
-
-func PaymentMethods() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("💵 Готівка", "cart:payment:cash"),
-			tgbotapi.NewInlineKeyboardButtonData("💳 Карта", "cart:payment:card"),
-		),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад", "cart:show")),
-	)
-}
-
-func ConfirmSale() tgbotapi.InlineKeyboardMarkup {
-	return tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Підтвердити", "cart:confirm_sale"),
-			tgbotapi.NewInlineKeyboardButtonData("Скасувати", "cart:show"),
-		),
-	)
 }
 
 func ReportPeriods(now time.Time) tgbotapi.InlineKeyboardMarkup {
