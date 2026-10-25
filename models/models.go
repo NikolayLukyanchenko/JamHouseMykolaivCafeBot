@@ -131,3 +131,27 @@ type SaleCheck struct {
 	CreatedAt     time.Time // local time
 	Items         []SaleItem
 }
+
+// Bundle is a checkout shortcut: one button that adds several products to
+// the order. It exists only on the checkout screen; sales, stock and reports
+// see the individual products.
+type Bundle struct {
+	ID    int64
+	Name  string
+	Items []BundleItem
+}
+
+// BundleItem is one product of a bundle with the product's current data.
+type BundleItem struct {
+	Product Product
+	Qty     int
+}
+
+// Price is the sum of the components' current prices.
+func (b Bundle) Price() float64 {
+	var total float64
+	for _, item := range b.Items {
+		total += item.Product.SellPrice * float64(item.Qty)
+	}
+	return total
+}

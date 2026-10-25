@@ -18,11 +18,12 @@ const POSTabTop = "top"
 // not cut off on phones.
 const longNameRunes = 12
 
-// POS renders the one-message checkout screen: category tabs, a product grid
-// where each tap adds one item, ➖ buttons for what is in the order, and
-// one-tap payment buttons.
-func POS(activeTab string, products []models.Product, cart []models.OrderItem, total float64) tgbotapi.InlineKeyboardMarkup {
+// POS renders the one-message checkout screen: category tabs, bundle
+// shortcuts, a product grid where each tap adds one item, ➖ buttons for what
+// is in the order, and one-tap payment buttons.
+func POS(activeTab string, bundles []models.Bundle, products []models.Product, cart []models.OrderItem, total float64) tgbotapi.InlineKeyboardMarkup {
 	rows := [][]tgbotapi.InlineKeyboardButton{posTabs(activeTab)}
+	rows = append(rows, bundleRows(bundles)...)
 
 	inCart := make(map[int64]int, len(cart))
 	for _, item := range cart {
@@ -74,6 +75,50 @@ func POS(activeTab string, products []models.Product, cart []models.OrderItem, t
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
+// bundleRows shows bundles two per row (one per row for long names). A bundle
+// with a missing component is marked ⛔.
+func bundleRows(bundles []models.Bundle) [][]tgbotapi.InlineKeyboardButton {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	var row []tgbotapi.InlineKeyboardButton
+	for _, b := range bundles {
+		if len(b.Items) == 0 {
+			continue
+		}
+		label := fmt.Sprintf("🧩 %s %s", b.Name, utils.FormatQuantity(b.Price()))
+		if !BundleAvailable(b) {
+			label = "⛔ " + b.Name
+		}
+		button := tgbotapi.NewInlineKeyboardButtonData(label, "pos:set:"+strconv.FormatInt(b.ID, 10))
+		if utf8.RuneCountInString(b.Name) > 2*longNameRunes-4 {
+			if len(row) > 0 {
+				rows = append(rows, row)
+				row = nil
+			}
+			rows = append(rows, []tgbotapi.InlineKeyboardButton{button})
+			continue
+		}
+		row = append(row, button)
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// BundleAvailable reports whether every component is on sale and in stock.
+func BundleAvailable(b models.Bundle) bool {
+	for _, item := range b.Items {
+		if !item.Product.IsActive || item.Product.Stock < float64(item.Qty) {
+			return false
+		}
+	}
+	return len(b.Items) > 0
+}
+
 func posTabs(active string) []tgbotapi.InlineKeyboardButton {
 	type tab struct{ key, label string }
 	tabs := []tab{{POSTabTop, "⭐ Топ"}}
@@ -96,4 +141,51 @@ func VoidSale(saleID int64) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("↩️ Скасувати чек", "pos:void:"+strconv.FormatInt(saleID, 10)),
 	))
+}
+
+// BundleBuilder lets an admin compose a bundle by tapping products, like the
+// checkout screen does for an order.
+func BundleBuilder(products []models.Product, qty map[int64]int, order []int64, names map[int64]string) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	perRow := 3
+	for _, p := range products {
+		if utf8.RuneCountInString(p.Name) > longNameRunes {
+			perRow = 2
+			break
+		}
+	}
+	var row []tgbotapi.InlineKeyboardButton
+	for _, p := range products {
+		label := p.Name
+		if n := qty[p.ID]; n > 0 {
+			label += fmt.Sprintf(" ·%d", n)
+		}
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, "admin:bundle_add:"+strconv.FormatInt(p.ID, 10)))
+		if len(row) == perRow {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	row = nil
+	for _, id := range order {
+		if qty[id] <= 0 {
+			continue
+		}
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("➖ %s ·%d", names[id], qty[id]), "admin:bundle_sub:"+strconv.FormatInt(id, 10)))
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("❌ Скасувати", "admin:bundles"),
+		tgbotapi.NewInlineKeyboardButtonData("✅ Зберегти", "admin:bundle_save"),
+	))
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }

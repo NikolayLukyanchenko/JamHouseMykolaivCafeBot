@@ -235,6 +235,18 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 			return err
 		}
 		return h.sendAdminProductCard(ctx, message.Chat.ID, s.EditingProductID, "Ціну продажу оновлено.")
+	case stateAwaitBundleName:
+		if !hasAnyRole(user.Role, models.RoleAdmin) {
+			return h.sendText(message.Chat.ID, "Лише адміністратор може змінювати набори.", nil)
+		}
+		if text == "" {
+			return h.sendPrompt(message.Chat.ID, "Назва не може бути порожньою.")
+		}
+		h.sessions.ClearState(user.UserID)
+		if err := h.storage.RenameBundle(ctx, s.EditingBundleID, text); err != nil {
+			return err
+		}
+		return h.sendBundleCard(ctx, message.Chat.ID, s.EditingBundleID, "Назву набору оновлено.")
 	case stateAwaitEditUnit:
 		if text == "" {
 			return h.sendPrompt(message.Chat.ID, "Одиниця виміру не може бути порожньою. Введіть, наприклад: шт, чашка, порція, 100г.")
@@ -305,6 +317,8 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	case data == "admin:panel":
 		h.sessions.ClearState(user.UserID)
 		return h.sendAdminPanel(callback.Message.Chat.ID)
+	case strings.HasPrefix(data, "admin:bundle"):
+		return h.handleBundleAdmin(ctx, user, callback)
 	case data == "admin:pitems", data == "admin:pchat_unbind", strings.HasPrefix(data, "admin:pitem"):
 		return h.handlePurchaseItemsAdminCallback(ctx, user, callback.Message.Chat.ID, data)
 	case data == "admin:add_product":

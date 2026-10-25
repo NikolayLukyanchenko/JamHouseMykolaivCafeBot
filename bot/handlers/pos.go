@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -46,12 +47,17 @@ func (h *Handler) refreshPOS(ctx context.Context, chatID int64, messageID int, u
 func (h *Handler) posScreen(ctx context.Context, userID int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
 	tab := h.sessions.get(userID).PosTab
 	var products []models.Product
+	var bundles []models.Bundle
 	var err error
 	if idx, convErr := strconv.Atoi(tab); convErr == nil && idx >= 0 && idx < len(models.Categories()) {
 		products, err = h.storage.ListProductsByCategory(ctx, models.Categories()[idx])
 	} else {
+		// Bundles are shortcuts for the most common orders, so they open
+		// first, on the "⭐ Топ" tab.
 		tab = keyboards.POSTabTop
-		products, err = h.storage.TopProducts(ctx, time.Now().Add(-popularPeriod), popularLimit)
+		if bundles, err = h.storage.ListBundles(ctx); err == nil {
+			products, err = h.storage.TopProducts(ctx, time.Now().Add(-popularPeriod), popularLimit)
+		}
 	}
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
@@ -68,10 +74,10 @@ func (h *Handler) posScreen(ctx context.Context, userID int64) (string, tgbotapi
 		}
 		b.WriteString(fmt.Sprintf("\n💰 Разом: %s", utils.FormatMoney(cartTotal(cart))))
 	}
-	if len(products) == 0 {
+	if len(products) == 0 && len(bundles) == 0 {
 		b.WriteString("\n\nУ цій вкладці поки немає товарів.")
 	}
-	return b.String(), keyboards.POS(tab, products, cart, cartTotal(cart)), nil
+	return b.String(), keyboards.POS(tab, bundles, products, cart, cartTotal(cart)), nil
 }
 
 func (h *Handler) handlePOSCallback(ctx context.Context, user models.User, callback *tgbotapi.CallbackQuery) error {
@@ -108,6 +114,39 @@ func (h *Handler) handlePOSCallback(ctx context.Context, user models.User, callb
 		}
 		h.sessions.AddToCart(user.UserID, models.OrderItem{ProductID: product.ID, Name: product.Name, Category: product.Category, Qty: 1, SellPrice: product.SellPrice, CostPrice: product.CostPrice, Unit: product.Unit})
 		_ = h.answerCallback(callback.ID, "+ "+product.Name)
+		return h.refreshPOS(ctx, chatID, messageID, user.UserID)
+
+	case "set":
+		bundleID, err := strconv.ParseInt(arg, 10, 64)
+		if err != nil {
+			return err
+		}
+		bundle, err := h.storage.GetBundle(ctx, bundleID)
+		if errors.Is(err, sql.ErrNoRows) {
+			_ = h.answerCallback(callback.ID, "Набір видалено")
+			return h.refreshPOS(ctx, chatID, messageID, user.UserID)
+		}
+		if err != nil {
+			return err
+		}
+		if len(bundle.Items) == 0 {
+			return h.answerCallback(callback.ID, "Набір порожній")
+		}
+		// All or nothing: check every component before adding any.
+		for _, item := range bundle.Items {
+			p := item.Product
+			switch {
+			case !p.IsActive || p.Stock < float64(item.Qty):
+				return h.answerCallback(callback.ID, "⛔ «"+p.Name+"» немає в наявності")
+			case p.Stock < h.qtyInCart(user.UserID, p.ID)+float64(item.Qty):
+				return h.answerCallback(callback.ID, fmt.Sprintf("Залишок «%s» лише %s %s", p.Name, utils.FormatQuantity(p.Stock), p.Unit))
+			}
+		}
+		for _, item := range bundle.Items {
+			p := item.Product
+			h.sessions.AddToCart(user.UserID, models.OrderItem{ProductID: p.ID, Name: p.Name, Category: p.Category, Qty: float64(item.Qty), SellPrice: p.SellPrice, CostPrice: p.CostPrice, Unit: p.Unit})
+		}
+		_ = h.answerCallback(callback.ID, "+ "+bundle.Name)
 		return h.refreshPOS(ctx, chatID, messageID, user.UserID)
 
 	case "clear":

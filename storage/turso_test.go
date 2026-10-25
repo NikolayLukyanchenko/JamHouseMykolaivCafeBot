@@ -319,6 +319,17 @@ func TestTursoEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	bundleID, err := store.SaveBundle(ctx, 0, "Лате + Лате", map[int64]int{latte: 2})
+	if err != nil {
+		t.Fatalf("SaveBundle: %v", err)
+	}
+	if b, err := store.GetBundle(ctx, bundleID); err != nil || len(b.Items) != 1 || b.Items[0].Qty != 2 || b.Price() != 141 {
+		t.Fatalf("GetBundle: %+v %v", b, err)
+	}
+	if err := store.DeleteBundle(ctx, bundleID); err != nil {
+		t.Fatalf("DeleteBundle: %v", err)
+	}
+
 	stats, err := store.Stats(ctx)
 	if err != nil {
 		t.Fatalf("Stats: %v", err)

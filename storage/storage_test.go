@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"os"
@@ -407,5 +408,55 @@ func TestTopProductsAndVoidSale(t *testing.T) {
 	}
 	if _, err := store.VoidSale(ctx, old.ID, 1, true, 3*time.Minute, now.Add(time.Hour)); err != nil {
 		t.Fatalf("admin may void any check at any time: %v", err)
+	}
+}
+
+func TestBundlesCRUD(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	coffee, _ := store.CreateProduct(ctx, models.Product{Name: "Кава", Category: models.CategoryDrinks, CostPrice: 15, SellPrice: 45, Unit: "чашка", Stock: 10, IsActive: true})
+	cream, _ := store.CreateProduct(ctx, models.Product{Name: "Вершки", Category: models.CategoryDrinks, CostPrice: 5, SellPrice: 10, Unit: "порція", Stock: 10, IsActive: true})
+	topping, _ := store.CreateProduct(ctx, models.Product{Name: "Топінг", Category: models.CategoryDrinks, CostPrice: 5, SellPrice: 15, Unit: "порція", Stock: 10, IsActive: true})
+
+	id, err := store.SaveBundle(ctx, 0, "Кава + Вершки", map[int64]int{coffee: 1, cream: 1})
+	if err != nil {
+		t.Fatalf("SaveBundle: %v", err)
+	}
+	if _, err := store.SaveBundle(ctx, 0, "Кава + Вершки + Топінг", map[int64]int{coffee: 1, cream: 1, topping: 1}); err != nil {
+		t.Fatal(err)
+	}
+	bundles, err := store.ListBundles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 2 || bundles[0].Name != "Кава + Вершки" || len(bundles[0].Items) != 2 || bundles[0].Price() != 55 || len(bundles[1].Items) != 3 || bundles[1].Price() != 70 {
+		t.Fatalf("unexpected bundles: %+v", bundles)
+	}
+
+	if _, err := store.SaveBundle(ctx, id, "Подвійна кава з вершками", map[int64]int{coffee: 2, cream: 1}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.GetBundle(ctx, id)
+	if err != nil || b.Name != "Подвійна кава з вершками" || b.Price() != 100 {
+		t.Fatalf("unexpected bundle after update: %+v %v", b, err)
+	}
+	if err := store.RenameBundle(ctx, id, "Кава x2 + вершки"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteBundle(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetBundle(ctx, id); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted bundle must be gone: %v", err)
+	}
+	if bundles, _ := store.ListBundles(ctx); len(bundles) != 1 {
+		t.Fatalf("expected 1 bundle left, got %d", len(bundles))
 	}
 }
