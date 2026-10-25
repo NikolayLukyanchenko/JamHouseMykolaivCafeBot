@@ -20,6 +20,7 @@ const (
 	stateAwaitEditCost      = "await_edit_cost"
 	stateAwaitEditSell      = "await_edit_sell"
 	stateAwaitEditUnit      = "await_edit_unit"
+	stateAwaitBundleName    = "await_bundle_name"
 	stateAwaitSetStock      = "await_set_stock"
 	stateAwaitIncreaseStock = "await_increase_stock"
 )
@@ -40,8 +41,17 @@ type session struct {
 	Cart             []models.OrderItem
 
 	PosTab                string // active tab of the checkout screen
+	Bundle                bundleDraft
+	EditingBundleID       int64
 	EditingPurchaseItemID int64
 	Purchase              purchaseDraft
+}
+
+// bundleDraft is the bundle an admin is composing; ID 0 means a new one.
+type bundleDraft struct {
+	ID    int64
+	Qty   map[int64]int
+	Order []int64 // components in the order they were added
 }
 
 // purchaseDraft is the purchase request being composed by tapping items.

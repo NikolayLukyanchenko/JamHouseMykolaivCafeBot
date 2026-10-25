@@ -120,6 +120,17 @@ items TEXT NOT NULL,
 sold_at DATETIME NOT NULL,
 voided_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
+		`CREATE TABLE IF NOT EXISTS bundles (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`,
+		`CREATE TABLE IF NOT EXISTS bundle_items (
+bundle_id INTEGER NOT NULL,
+product_id INTEGER NOT NULL,
+qty INTEGER NOT NULL,
+PRIMARY KEY (bundle_id, product_id)
+);`,
 		`CREATE TABLE IF NOT EXISTS settings (
 key TEXT PRIMARY KEY,
 value TEXT NOT NULL
@@ -589,6 +600,114 @@ func (s *Storage) VoidSale(ctx context.Context, saleID, userID int64, asAdmin bo
 		return models.Sale{}, err
 	}
 	return sale, tx.Commit()
+}
+
+// ListBundles returns all bundles with their components (current product
+// data), ordered by name.
+func (s *Storage) ListBundles(ctx context.Context) ([]models.Bundle, error) {
+	return s.queryBundles(ctx, 0)
+}
+
+// GetBundle returns sql.ErrNoRows when the bundle does not exist.
+func (s *Storage) GetBundle(ctx context.Context, bundleID int64) (models.Bundle, error) {
+	bundles, err := s.queryBundles(ctx, bundleID)
+	if err != nil {
+		return models.Bundle{}, err
+	}
+	if len(bundles) == 0 {
+		return models.Bundle{}, sql.ErrNoRows
+	}
+	return bundles[0], nil
+}
+
+func (s *Storage) queryBundles(ctx context.Context, bundleID int64) ([]models.Bundle, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT b.id, b.name, COALESCE(bi.qty, 0),
+COALESCE(p.id, 0), COALESCE(p.name, ''), COALESCE(p.category, ''), COALESCE(p.cost_price, 0), COALESCE(p.sell_price, 0),
+COALESCE(p.unit, ''), COALESCE(p.stock, 0), COALESCE(p.is_active, 0)
+FROM bundles b
+LEFT JOIN bundle_items bi ON bi.bundle_id = b.id
+LEFT JOIN products p ON p.id = bi.product_id
+WHERE (? = 0 OR b.id = ?)
+ORDER BY b.name COLLATE NOCASE, b.id, p.name
+`, bundleID, bundleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bundles []models.Bundle
+	for rows.Next() {
+		var id int64
+		var name string
+		var item models.BundleItem
+		var active int
+		p := &item.Product
+		if err := rows.Scan(&id, &name, &item.Qty, &p.ID, &p.Name, &p.Category, &p.CostPrice, &p.SellPrice, &p.Unit, &p.Stock, &active); err != nil {
+			return nil, err
+		}
+		p.IsActive = active == 1
+		if n := len(bundles); n == 0 || bundles[n-1].ID != id {
+			bundles = append(bundles, models.Bundle{ID: id, Name: name})
+		}
+		if p.ID != 0 {
+			last := &bundles[len(bundles)-1]
+			last.Items = append(last.Items, item)
+		}
+	}
+	return bundles, rows.Err()
+}
+
+// SaveBundle creates (bundleID 0) or updates a bundle and replaces its
+// components with qty per product ID.
+func (s *Storage) SaveBundle(ctx context.Context, bundleID int64, name string, qty map[int64]int) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if bundleID == 0 {
+		res, err := tx.ExecContext(ctx, `INSERT INTO bundles (name) VALUES (?)`, name)
+		if err != nil {
+			return 0, err
+		}
+		if bundleID, err = res.LastInsertId(); err != nil {
+			return 0, err
+		}
+	} else if _, err := tx.ExecContext(ctx, `UPDATE bundles SET name = ? WHERE id = ?`, name, bundleID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bundle_items WHERE bundle_id = ?`, bundleID); err != nil {
+		return 0, err
+	}
+	for productID, n := range qty {
+		if n <= 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO bundle_items (bundle_id, product_id, qty) VALUES (?, ?, ?)`, bundleID, productID, n); err != nil {
+			return 0, err
+		}
+	}
+	return bundleID, tx.Commit()
+}
+
+func (s *Storage) RenameBundle(ctx context.Context, bundleID int64, name string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE bundles SET name = ? WHERE id = ?`, name, bundleID)
+	return err
+}
+
+func (s *Storage) DeleteBundle(ctx context.Context, bundleID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bundle_items WHERE bundle_id = ?`, bundleID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bundles WHERE id = ?`, bundleID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // soldItems aggregates sold quantities, revenue and cost per product in

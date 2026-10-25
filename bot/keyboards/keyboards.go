@@ -36,7 +36,10 @@ func AdminPanel() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("📦 Поповнити залишки", "admin:replenish_stock"),
 			tgbotapi.NewInlineKeyboardButtonData("📋 Список товарів", "admin:list_products"),
 		),
-		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🛒 Позиції для закупки", "admin:pitems")),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🧩 Набори для каси", "admin:bundles"),
+			tgbotapi.NewInlineKeyboardButtonData("🛒 Позиції для закупки", "admin:pitems"),
+		),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
 	)
 }
