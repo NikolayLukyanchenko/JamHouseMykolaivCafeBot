@@ -82,6 +82,10 @@ type DailyReport struct {
 	Checks       int
 	Items        []DailyReportItem
 	Sellers      []SellerSummary
+	// Checks cancelled with "↩️ Скасувати чек" for sales of that day; they
+	// are not part of the totals above.
+	VoidedChecks int
+	VoidedTotal  float64
 }
 
 type DailyReportItem struct {

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -331,5 +332,80 @@ func TestBackupProducesImportableCopy(t *testing.T) {
 	}
 	if err := store.Backup(ctx, dest); err == nil {
 		t.Fatal("backup must not overwrite an existing file")
+	}
+}
+
+func TestTopProductsAndVoidSale(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(name string) int64 {
+		id, err := store.CreateProduct(ctx, models.Product{Name: name, Category: models.CategoryDrinks, CostPrice: 10, SellPrice: 50, Unit: "шт", Stock: 20, IsActive: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	americano, latte, tea := mk("Американо"), mk("Лате"), mk("Чай")
+	hidden := mk("Сезонний")
+	if err := store.SetProductActive(ctx, hidden, false); err != nil {
+		t.Fatal(err)
+	}
+
+	sale, _, err := store.RecordSale(ctx, 1, models.PaymentCard, []models.OrderItem{{ProductID: latte, Qty: 3}, {ProductID: tea, Qty: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, err := store.TopProducts(ctx, time.Now().AddDate(0, 0, -14), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(top) != 3 || top[0].ID != latte || top[1].ID != tea || top[2].ID != americano {
+		t.Fatalf("unexpected top order: %+v", top)
+	}
+
+	now := time.Now()
+	if _, err := store.VoidSale(ctx, sale.ID, 2, false, 3*time.Minute, now); !errors.Is(err, ErrVoidForbidden) {
+		t.Fatalf("another seller must not void: %v", err)
+	}
+	if _, err := store.VoidSale(ctx, sale.ID, 1, false, 3*time.Minute, now.Add(10*time.Minute)); !errors.Is(err, ErrVoidTooLate) {
+		t.Fatalf("void after the window must fail: %v", err)
+	}
+	voided, err := store.VoidSale(ctx, sale.ID, 1, false, 3*time.Minute, now)
+	if err != nil {
+		t.Fatalf("VoidSale: %v", err)
+	}
+	if voided.Total != 200 {
+		t.Fatalf("unexpected voided sale: %+v", voided)
+	}
+	if p, _ := store.GetProduct(ctx, latte); p.Stock != 20 {
+		t.Fatalf("stock must be returned, got %v", p.Stock)
+	}
+	report, err := store.GetDailyReport(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Checks != 0 || report.TotalRevenue != 0 || len(report.Items) != 0 || report.VoidedChecks != 1 || report.VoidedTotal != 200 {
+		t.Fatalf("voided sale must leave totals and be counted separately: %+v", report)
+	}
+	if _, err := store.VoidSale(ctx, sale.ID, 1, true, 0, now); !errors.Is(err, ErrSaleNotFound) {
+		t.Fatalf("second void must report not found: %v", err)
+	}
+
+	old, _, err := store.RecordSale(ctx, 2, models.PaymentCash, []models.OrderItem{{ProductID: americano, Qty: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.VoidSale(ctx, old.ID, 1, true, 3*time.Minute, now.Add(time.Hour)); err != nil {
+		t.Fatalf("admin may void any check at any time: %v", err)
 	}
 }

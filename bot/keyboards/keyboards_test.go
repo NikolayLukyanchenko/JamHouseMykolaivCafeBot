@@ -3,6 +3,8 @@ package keyboards
 import (
 	"testing"
 	"time"
+
+	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
 )
 
 func TestReportCalendar(t *testing.T) {
@@ -44,5 +46,30 @@ func TestDayNavRow(t *testing.T) {
 	old := dayNavRow("my:day:", now.AddDate(0, 0, -5), now)
 	if len(old) != 3 || old[1].Text != "Сьогодні" || *old[2].CallbackData != "my:day:2026-09-29" {
 		t.Fatalf("older day: back + today + forward expected: %+v", old)
+	}
+}
+
+func TestPOSLayout(t *testing.T) {
+	short := []models.Product{{ID: 1, Name: "Лате", SellPrice: 70, Stock: 5}, {ID: 2, Name: "Чай", SellPrice: 30, Stock: 5}, {ID: 3, Name: "Какао", SellPrice: 50, Stock: 0}}
+	kb := POS(POSTabTop, short, nil, 0)
+	if len(kb.InlineKeyboard) != 2 || len(kb.InlineKeyboard[1]) != 3 {
+		t.Fatalf("short names: tabs + one row of 3 expected, got %+v", kb.InlineKeyboard)
+	}
+	if kb.InlineKeyboard[1][2].Text != "⛔ Какао" {
+		t.Fatalf("sold-out product must be marked: %q", kb.InlineKeyboard[1][2].Text)
+	}
+
+	long := append(short, models.Product{ID: 4, Name: "Капучино на кокосовому", SellPrice: 85, Stock: 5})
+	cart := []models.OrderItem{{ProductID: 1, Name: "Лате", Qty: 2, SellPrice: 70}}
+	kb = POS("0", long, cart, 140)
+	if len(kb.InlineKeyboard[1]) != 2 {
+		t.Fatalf("long names must use 2 columns: %+v", kb.InlineKeyboard[1])
+	}
+	if kb.InlineKeyboard[1][0].Text != "Лате 70 ·2" || kb.InlineKeyboard[0][1].Text != "▸🥤 Напої" {
+		t.Fatalf("unexpected labels: %q %q", kb.InlineKeyboard[1][0].Text, kb.InlineKeyboard[0][1].Text)
+	}
+	last := kb.InlineKeyboard[len(kb.InlineKeyboard)-1]
+	if *last[0].CallbackData != "pos:pay:cash" || last[1].Text != "💳 Карта 140" {
+		t.Fatalf("unexpected payment row: %+v", last)
 	}
 }

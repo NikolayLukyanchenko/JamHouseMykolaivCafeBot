@@ -16,7 +16,10 @@ func FormatDailyReport(report models.DailyReport) string {
 	b.WriteString(fmt.Sprintf("📊 Звіт за %s\n\n", report.Date.Format("02.01.2006")))
 	if report.Checks == 0 {
 		b.WriteString("Продажів за цей день немає.")
-		return b.String()
+		if report.VoidedChecks > 0 {
+			b.WriteString("\n" + voidedLine(report))
+		}
+		return strings.TrimSpace(b.String())
 	}
 
 	b.WriteString(fmt.Sprintf("💰 Виручка: %s\n", utils.FormatMoney(report.TotalRevenue)))
@@ -29,6 +32,9 @@ func FormatDailyReport(report models.DailyReport) string {
 	}
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("🧾 Чеків: %d, середній чек: %s\n", report.Checks, utils.FormatMoney(report.TotalRevenue/float64(report.Checks))))
+	if report.VoidedChecks > 0 {
+		b.WriteString(voidedLine(report))
+	}
 
 	b.WriteString("\n🛍 Продані товари\n")
 	b.WriteString("(кількість · виручка · собівартість · прибуток)\n")
@@ -154,4 +160,8 @@ func isKnownCategory(category string) bool {
 		}
 	}
 	return false
+}
+
+func voidedLine(report models.DailyReport) string {
+	return fmt.Sprintf("↩️ Скасовано чеків: %d на %s (не входять у виручку)\n", report.VoidedChecks, utils.FormatMoney(report.VoidedTotal))
 }

@@ -84,3 +84,14 @@ func TestFormatChecks(t *testing.T) {
 		t.Fatalf("unexpected checks text:\n%s", text)
 	}
 }
+
+func TestFormatDailyReportVoided(t *testing.T) {
+	report := models.DailyReport{Date: time.Date(2026, 10, 25, 0, 0, 0, 0, time.Local), TotalRevenue: 50, Checks: 1, VoidedChecks: 2, VoidedTotal: 120}
+	if text := FormatDailyReport(report); !strings.Contains(text, "↩️ Скасовано чеків: 2 на 120.00 грн") {
+		t.Fatalf("voided checks missing:\n%s", text)
+	}
+	empty := FormatDailyReport(models.DailyReport{Date: report.Date, VoidedChecks: 1, VoidedTotal: 70})
+	if !strings.Contains(empty, "Продажів за цей день немає") || !strings.Contains(empty, "Скасовано чеків: 1") {
+		t.Fatalf("voided checks missing on a day without sales:\n%s", empty)
+	}
+}
