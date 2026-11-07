@@ -23,6 +23,7 @@ const (
 	stateAwaitBundleName    = "await_bundle_name"
 	stateAwaitSetStock      = "await_set_stock"
 	stateAwaitIncreaseStock = "await_increase_stock"
+	stateAwaitReceiveCost   = "await_receive_cost"
 )
 
 type productDraft struct {
@@ -43,6 +44,7 @@ type session struct {
 	PosTab                string // active tab of the checkout screen
 	Bundle                bundleDraft
 	EditingBundleID       int64
+	ReceiveQty            float64 // quantity entered while replenishing, waiting for the price
 	EditingPurchaseItemID int64
 	Purchase              purchaseDraft
 }

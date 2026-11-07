@@ -165,3 +165,25 @@ func isKnownCategory(category string) bool {
 func voidedLine(report models.DailyReport) string {
 	return fmt.Sprintf("↩️ Скасовано чеків: %d на %s (не входять у виручку)\n", report.VoidedChecks, utils.FormatMoney(report.VoidedTotal))
 }
+
+// FormatReceipts renders the receipt log ("журнал приходів") for a day.
+func FormatReceipts(date, now time.Time, receipts []models.StockReceipt) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("📥 Журнал приходів за %s\n\n", DayLabel(date, now)))
+	if len(receipts) == 0 {
+		b.WriteString("Приходів за цей день немає.")
+		return b.String()
+	}
+	var total float64
+	for _, r := range receipts {
+		b.WriteString(fmt.Sprintf("🕐 %s · %s +%s %s по %s\n", r.CreatedAt.Format("15:04"), r.ProductName, utils.FormatQuantity(r.Qty), r.Unit, utils.FormatMoney(r.UnitCost)))
+		line := fmt.Sprintf("    собівартість %s → %s", utils.FormatMoney(r.CostBefore), utils.FormatMoney(r.CostAfter))
+		if r.UserName != "" {
+			line += " · " + r.UserName
+		}
+		b.WriteString(line + "\n")
+		total += r.Qty * r.UnitCost
+	}
+	b.WriteString(fmt.Sprintf("\n💸 Закуплено на: %s", utils.FormatMoney(total)))
+	return b.String()
+}

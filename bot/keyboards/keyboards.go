@@ -40,7 +40,24 @@ func AdminPanel() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🧩 Набори для каси", "admin:bundles"),
 			tgbotapi.NewInlineKeyboardButtonData("🛒 Позиції для закупки", "admin:pitems"),
 		),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📥 Журнал приходів", "admin:rcpt")),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
+	)
+}
+
+// ReceiptCost asks for the purchase price and offers to keep the current cost.
+func ReceiptCost(currentCost float64) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("Ціна та сама (%.2f)", currentCost), "admin:rcv_same")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Скасувати", "nav:cancel")),
+	)
+}
+
+// ReceiptLogNav browses the receipt log day by day.
+func ReceiptLogNav(day, now time.Time) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		dayNavRow("admin:rcpt:", day, now),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
 	)
 }
 

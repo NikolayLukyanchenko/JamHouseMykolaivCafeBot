@@ -319,6 +319,23 @@ func TestTursoEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if err := store.SetProductActive(ctx, latte, true); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := store.ReceiveStock(ctx, latte, 2, 40, 1)
+	if err != nil {
+		t.Fatalf("ReceiveStock: %v", err)
+	}
+	if receipt.StockBefore != 8 || receipt.CostAfter != WeightedCost(8, 30, 2, 40) {
+		t.Fatalf("unexpected receipt: %+v", receipt)
+	}
+	if receipts, err := store.ListReceipts(ctx, time.Now()); err != nil || len(receipts) != 1 || receipts[0].CreatedAt.IsZero() {
+		t.Fatalf("ListReceipts: %+v %v", receipts, err)
+	}
+	if err := store.SetProductActive(ctx, latte, false); err != nil {
+		t.Fatal(err)
+	}
+
 	bundleID, err := store.SaveBundle(ctx, 0, "Лате + Лате", map[int64]int{latte: 2})
 	if err != nil {
 		t.Fatalf("SaveBundle: %v", err)

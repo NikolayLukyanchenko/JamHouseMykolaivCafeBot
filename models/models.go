@@ -155,3 +155,19 @@ func (b Bundle) Price() float64 {
 	}
 	return total
 }
+
+// StockReceipt is one replenishment from the receipt log ("журнал приходів").
+type StockReceipt struct {
+	ID          int64
+	ProductID   int64
+	ProductName string
+	Unit        string
+	Qty         float64
+	UnitCost    float64 // purchase price per unit
+	StockBefore float64
+	CostBefore  float64
+	CostAfter   float64 // weighted average after the receipt
+	UserID      int64
+	UserName    string
+	CreatedAt   time.Time // local time
+}

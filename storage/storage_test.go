@@ -460,3 +460,73 @@ func TestBundlesCRUD(t *testing.T) {
 		t.Fatalf("expected 1 bundle left, got %d", len(bundles))
 	}
 }
+
+func TestWeightedCost(t *testing.T) {
+	cases := []struct{ stock, cost, qty, unit, want float64 }{
+		{2, 25, 3, 27, 26.2}, // the cola example
+		{0, 25, 3, 27, 27},   // nothing left: purchase price becomes the cost
+		{-1, 25, 3, 27, 27},
+		{5, 26.2, 5, 26.2, 26.2},
+		{3, 10, 1, 11, 10.25},
+		{1, 10, 2, 10.01, 10.01}, // (10 + 20.02) / 3 = 10.0066 -> 10.01
+	}
+	for _, c := range cases {
+		if got := WeightedCost(c.stock, c.cost, c.qty, c.unit); got != c.want {
+			t.Errorf("WeightedCost(%v, %v, %v, %v) = %v, want %v", c.stock, c.cost, c.qty, c.unit, got, c.want)
+		}
+	}
+}
+
+func TestReceiveStockKeepsPastSalesCost(t *testing.T) {
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1}); err != nil {
+		t.Fatal(err)
+	}
+	cola, _ := store.CreateProduct(ctx, models.Product{Name: "Кола", Category: models.CategoryDrinks, CostPrice: 25, SellPrice: 29, Unit: "банка", Stock: 3, IsActive: true})
+	if _, _, err := store.RecordSale(ctx, 1, models.PaymentCash, []models.OrderItem{{ProductID: cola, Qty: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := store.ReceiveStock(ctx, cola, 3, 27, 1)
+	if err != nil {
+		t.Fatalf("ReceiveStock: %v", err)
+	}
+	if r.StockBefore != 2 || r.CostBefore != 25 || r.CostAfter != 26.2 || r.ProductName != "Кола" || r.Unit != "банка" {
+		t.Fatalf("unexpected receipt: %+v", r)
+	}
+	p, _ := store.GetProduct(ctx, cola)
+	if p.Stock != 5 || p.CostPrice != 26.2 || p.SellPrice != 29 {
+		t.Fatalf("unexpected product after receipt: %+v", p)
+	}
+
+	if _, _, err := store.RecordSale(ctx, 1, models.PaymentCash, []models.OrderItem{{ProductID: cola, Qty: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.GetDailyReport(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One can at the old cost 25, one at the new average 26.20.
+	if report.CostTotal != 51.2 || report.TotalRevenue != 58 {
+		t.Fatalf("unexpected report: cost %v revenue %v", report.CostTotal, report.TotalRevenue)
+	}
+
+	receipts, err := store.ListReceipts(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 || receipts[0].UserName == "" || receipts[0].CreatedAt.IsZero() || receipts[0].Qty != 3 || receipts[0].UnitCost != 27 {
+		t.Fatalf("unexpected receipt log: %+v", receipts)
+	}
+	if other, _ := store.ListReceipts(ctx, time.Now().AddDate(0, 0, -1)); len(other) != 0 {
+		t.Fatalf("yesterday must be empty: %+v", other)
+	}
+}
