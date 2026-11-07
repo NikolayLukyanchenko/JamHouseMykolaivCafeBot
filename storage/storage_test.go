@@ -530,3 +530,74 @@ func TestReceiveStockKeepsPastSalesCost(t *testing.T) {
 		t.Fatalf("yesterday must be empty: %+v", other)
 	}
 }
+
+func TestMonthlyReport(t *testing.T) {
+	kyiv, err := time.LoadLocation("Europe/Kyiv")
+	if err != nil {
+		t.Skipf("no tzdata: %v", err)
+	}
+	prevLocal := time.Local
+	time.Local = kyiv
+	defer func() { time.Local = prevLocal }()
+
+	ctx := context.Background()
+	store, err := New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedAdmins(ctx, []int64{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	latte, _ := store.CreateProduct(ctx, models.Product{Name: "Лате", Category: models.CategoryDrinks, CostPrice: 30, SellPrice: 70, Unit: "чашка", Stock: 100, IsActive: true})
+
+	// created_at is UTC; Kyiv is UTC+2 in November and UTC+3 in October.
+	sale := func(user int64, payment, createdAt string, qty float64) {
+		res, err := store.db.ExecContext(ctx, `INSERT INTO sales (user_id, total, cost_total, payment_method, created_at) VALUES (?, ?, ?, ?, ?)`, user, 70*qty, 30*qty, payment, createdAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO sale_items (sale_id, product_id, name, qty, sell_price, cost_price) VALUES (?, ?, 'Лате', ?, 70, 30)`, id, latte, qty); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sale(1, models.PaymentCash, "2026-10-31 21:30:00", 1) // 31.10 23:30 Kyiv -> October
+	sale(1, models.PaymentCash, "2026-10-31 22:30:00", 2) // 01.11 00:30 Kyiv -> November
+	sale(2, models.PaymentCard, "2026-11-01 10:00:00", 1)
+	sale(1, models.PaymentCard, "2026-11-15 12:00:00", 3)
+	sale(2, models.PaymentCash, "2026-11-30 22:30:00", 1) // 01.12 00:30 Kyiv -> December
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO stock_receipts (product_id, product_name, unit, qty, unit_cost, stock_before, cost_before, cost_after, user_id, created_at)
+VALUES (?, 'Лате', 'чашка', 10, 31, 0, 30, 31, 1, '2026-11-05 09:00:00')`, latte); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := store.GetMonthlyReport(ctx, time.Date(2026, 11, 20, 12, 0, 0, 0, kyiv))
+	if err != nil {
+		t.Fatalf("GetMonthlyReport: %v", err)
+	}
+	s := r.Summary
+	if !r.Month.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, kyiv)) || s.Checks != 3 || s.TotalRevenue != 420 || s.CashRevenue != 140 || s.CardRevenue != 280 || s.CostTotal != 180 {
+		t.Fatalf("unexpected totals: %+v", s)
+	}
+	if len(s.Items) != 1 || s.Items[0].Qty != 6 || len(s.Sellers) != 2 {
+		t.Fatalf("unexpected items/sellers: %+v %+v", s.Items, s.Sellers)
+	}
+	if len(r.Days) != 2 || r.Days[0].Date.Day() != 1 || r.Days[0].Checks != 2 || r.Days[0].Revenue != 210 || r.Days[1].Date.Day() != 15 || r.Days[1].Revenue != 210 {
+		t.Fatalf("unexpected days: %+v", r.Days)
+	}
+	if r.PurchaseTotal != 310 || r.ReceiptsSince.IsZero() {
+		t.Fatalf("unexpected purchases: %v since %v", r.PurchaseTotal, r.ReceiptsSince)
+	}
+
+	oct, err := store.GetMonthlyReport(ctx, time.Date(2026, 10, 1, 0, 0, 0, 0, kyiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oct.Summary.Checks != 1 || len(oct.Days) != 1 || oct.Days[0].Date.Day() != 31 || oct.PurchaseTotal != 0 {
+		t.Fatalf("unexpected October: %+v", oct)
+	}
+}

@@ -18,8 +18,9 @@ func (h *Handler) handleReportCallback(ctx context.Context, chatID int64, messag
 		return h.sendDailyReport(ctx, chatID, now)
 	case data == "report:yesterday":
 		return h.sendDailyReport(ctx, chatID, now.AddDate(0, 0, -1))
-	case strings.HasPrefix(data, "report:cal:"):
-		month, err := time.ParseInLocation("2006-01", strings.TrimPrefix(data, "report:cal:"), time.Local)
+	case strings.HasPrefix(data, "report:cal:"), strings.HasPrefix(data, "report:calnew:"):
+		raw := strings.TrimPrefix(strings.TrimPrefix(data, "report:cal:"), "report:calnew:")
+		month, err := time.ParseInLocation("2006-01", raw, time.Local)
 		if err != nil {
 			return err
 		}
@@ -28,7 +29,28 @@ func (h *Handler) handleReportCallback(ctx context.Context, chatID int64, messag
 			return err
 		}
 		markup := keyboards.ReportCalendar(month, salesDays, now)
-		return h.editText(chatID, messageID, "📅 Оберіть день для звіту.\n• — дні, коли були продажі.", &markup)
+		text := "📅 Оберіть день для звіту.\n• — дні, коли були продажі."
+		if strings.HasPrefix(data, "report:calnew:") {
+			// Opened from a monthly report: keep that report on screen.
+			return h.sendText(chatID, text, &markup)
+		}
+		return h.editText(chatID, messageID, text, &markup)
+	case strings.HasPrefix(data, "report:month:"), strings.HasPrefix(data, "report:mnav:"):
+		raw := strings.TrimPrefix(strings.TrimPrefix(data, "report:month:"), "report:mnav:")
+		month, err := time.ParseInLocation("2006-01", raw, time.Local)
+		if err != nil {
+			return err
+		}
+		report, err := h.storage.GetMonthlyReport(ctx, month)
+		if err != nil {
+			return err
+		}
+		text := reports.FormatMonthlyReport(report, now)
+		markup := keyboards.MonthlyReportActions(month, now)
+		if strings.HasPrefix(data, "report:month:") {
+			return h.sendText(chatID, text, &markup)
+		}
+		return h.showInPlace(chatID, messageID, text, &markup)
 	case strings.HasPrefix(data, "report:day:"):
 		day, err := parseDay(strings.TrimPrefix(data, "report:day:"))
 		if err != nil {

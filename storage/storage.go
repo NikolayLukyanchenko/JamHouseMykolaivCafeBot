@@ -491,6 +491,61 @@ WHERE user_id = ? AND created_at >= ? AND created_at < ?
 
 func (s *Storage) GetDailyReport(ctx context.Context, date time.Time) (models.DailyReport, error) {
 	start, end := dayBounds(date)
+	return s.periodReport(ctx, start, end)
+}
+
+// GetMonthlyReport builds the report for the local calendar month of date.
+func (s *Storage) GetMonthlyReport(ctx context.Context, date time.Time) (models.MonthlyReport, error) {
+	start := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.Local)
+	end := start.AddDate(0, 1, 0)
+	report := models.MonthlyReport{Month: start}
+	summary, err := s.periodReport(ctx, start, end)
+	if err != nil {
+		return report, err
+	}
+	report.Summary = summary
+
+	rows, err := s.db.QueryContext(ctx, `SELECT created_at, total FROM sales WHERE created_at >= ? AND created_at < ? ORDER BY created_at`, formatDBTime(start), formatDBTime(end))
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var createdAt string
+		var total float64
+		if err := rows.Scan(&createdAt, &total); err != nil {
+			return report, err
+		}
+		local := parseDBTime(createdAt).In(time.Local)
+		day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+		if n := len(report.Days); n == 0 || !report.Days[n-1].Date.Equal(day) {
+			report.Days = append(report.Days, models.DayTotal{Date: day})
+		}
+		last := &report.Days[len(report.Days)-1]
+		last.Revenue += total
+		last.Checks++
+	}
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(qty * unit_cost), 0) FROM stock_receipts WHERE created_at >= ? AND created_at < ?`,
+		formatDBTime(start), formatDBTime(end)).Scan(&report.PurchaseTotal); err != nil {
+		return report, err
+	}
+	var first sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(created_at) FROM stock_receipts`).Scan(&first); err != nil {
+		return report, err
+	}
+	if first.Valid {
+		report.ReceiptsSince = parseDBTime(first.String).In(time.Local)
+	}
+	return report, nil
+}
+
+// periodReport sums sales in [start, end): totals by payment, cost, items,
+// voided checks and sellers. Date is set to start.
+func (s *Storage) periodReport(ctx context.Context, start, end time.Time) (models.DailyReport, error) {
 	report := models.DailyReport{Date: start}
 
 	row := s.db.QueryRowContext(ctx, `

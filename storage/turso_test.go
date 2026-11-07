@@ -347,6 +347,11 @@ func TestTursoEndToEnd(t *testing.T) {
 		t.Fatalf("DeleteBundle: %v", err)
 	}
 
+	monthly, err := store.GetMonthlyReport(ctx, now)
+	if err != nil || monthly.Summary.Checks != 1 || len(monthly.Days) != 1 || monthly.ReceiptsSince.IsZero() {
+		t.Fatalf("GetMonthlyReport: %+v %v", monthly, err)
+	}
+
 	stats, err := store.Stats(ctx)
 	if err != nil {
 		t.Fatalf("Stats: %v", err)

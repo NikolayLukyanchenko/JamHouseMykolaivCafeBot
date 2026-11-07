@@ -49,3 +49,45 @@ func TestBrowseReportsByDay(t *testing.T) {
 		t.Fatalf("unexpected checks list: %q", got)
 	}
 }
+
+func TestMonthlyReportFlow(t *testing.T) {
+	h, fake := newTestHandler(t)
+	ctx := context.Background()
+	latte, err := h.storage.CreateProduct(ctx, models.Product{Name: "Лате", Category: models.CategoryDrinks, CostPrice: 30, SellPrice: 70, Unit: "чашка", Stock: 10, IsActive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.storage.RecordSale(ctx, 1, models.PaymentCard, []models.OrderItem{{ProductID: latte, Qty: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	thisMonth := now.Format("2006-01")
+	lastMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0).Format("2006-01")
+
+	sendTextUpdate(t, h, "Відправити звіт")
+	if got := fake.last(t).Markup; !strings.Contains(got, "report:month:"+thisMonth) || !strings.Contains(got, "report:month:"+lastMonth) {
+		t.Fatalf("report menu must offer this and last month: %q", got)
+	}
+
+	sendCallbackUpdate(t, h, "report:month:"+thisMonth)
+	month := fake.last(t)
+	if month.Method != "sendMessage" || !strings.Contains(month.Text, "📆 Звіт за") || !strings.Contains(month.Text, "(поточний") ||
+		!strings.Contains(month.Text, "Виручка: 140.00 грн") || !strings.Contains(month.Text, "Днів з продажами: 1") || !strings.Contains(month.Text, "📅 По днях") {
+		t.Fatalf("unexpected monthly report: %+v", month)
+	}
+	if !strings.Contains(month.Markup, "report:mnav:"+lastMonth) || strings.Contains(month.Markup, "▶️") {
+		t.Fatalf("current month: back only, no forward: %q", month.Markup)
+	}
+
+	sendCallbackUpdate(t, h, "report:mnav:"+lastMonth)
+	prev := fake.last(t)
+	if prev.Method != "editMessageText" || !strings.Contains(prev.Text, "Продажів за цей місяць немає") || !strings.Contains(prev.Markup, "report:mnav:"+thisMonth) {
+		t.Fatalf("unexpected previous month: %+v", prev)
+	}
+
+	before := len(fake.all())
+	sendCallbackUpdate(t, h, "report:calnew:"+thisMonth)
+	if got := fake.all()[before:]; len(got) != 1 || got[0].Method != "sendMessage" || !strings.Contains(got[0].Markup, "report:day:") {
+		t.Fatalf("day picker must open as a new message: %+v", got)
+	}
+}

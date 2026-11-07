@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -94,4 +95,18 @@ func SplitMessage(text string, limit int) []string {
 		text = strings.TrimLeft(text[cut:], "\n")
 	}
 	return append(parts, text)
+}
+
+var monthNames = [...]string{"Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"}
+
+// MonthTitle renders e.g. "Жовтень 2026".
+func MonthTitle(month time.Time) string {
+	return fmt.Sprintf("%s %d", monthNames[month.Month()-1], month.Year())
+}
+
+var weekdayShort = [...]string{"Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"}
+
+// WeekdayShort renders e.g. "Пн".
+func WeekdayShort(day time.Time) string {
+	return weekdayShort[day.Weekday()]
 }
