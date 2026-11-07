@@ -155,3 +155,37 @@ func (b Bundle) Price() float64 {
 	}
 	return total
 }
+
+// StockReceipt is one replenishment from the receipt log ("журнал приходів").
+type StockReceipt struct {
+	ID          int64
+	ProductID   int64
+	ProductName string
+	Unit        string
+	Qty         float64
+	UnitCost    float64 // purchase price per unit
+	StockBefore float64
+	CostBefore  float64
+	CostAfter   float64 // weighted average after the receipt
+	UserID      int64
+	UserName    string
+	CreatedAt   time.Time // local time
+}
+
+// MonthlyReport is the report for one calendar month.
+type MonthlyReport struct {
+	Month   time.Time   // first day of the month, local time
+	Summary DailyReport // totals, items and sellers for the whole month
+	Days    []DayTotal  // days with sales, in order
+	// PurchaseTotal is the sum of stock receipts in the month. The receipt
+	// log exists only since ReceiptsSince (zero if it is still empty).
+	PurchaseTotal float64
+	ReceiptsSince time.Time
+}
+
+// DayTotal is one day's revenue within a monthly report.
+type DayTotal struct {
+	Date    time.Time
+	Revenue float64
+	Checks  int
+}

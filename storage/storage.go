@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +131,19 @@ bundle_id INTEGER NOT NULL,
 product_id INTEGER NOT NULL,
 qty INTEGER NOT NULL,
 PRIMARY KEY (bundle_id, product_id)
+);`,
+		`CREATE TABLE IF NOT EXISTS stock_receipts (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+product_id INTEGER NOT NULL,
+product_name TEXT NOT NULL,
+unit TEXT NOT NULL,
+qty REAL NOT NULL,
+unit_cost REAL NOT NULL,
+stock_before REAL NOT NULL,
+cost_before REAL NOT NULL,
+cost_after REAL NOT NULL,
+user_id INTEGER NOT NULL,
+created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`,
 		`CREATE TABLE IF NOT EXISTS settings (
 key TEXT PRIMARY KEY,
@@ -296,9 +310,76 @@ func (s *Storage) SetProductActive(ctx context.Context, productID int64, active 
 	return err
 }
 
-func (s *Storage) IncreaseProductStock(ctx context.Context, productID int64, delta float64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE products SET stock = stock + ? WHERE id = ?`, delta, productID)
-	return err
+// WeightedCost is the new unit cost after receiving qty units at unitCost on
+// top of stock units at cost, rounded to kopiyky. With nothing in stock the
+// purchase price becomes the cost.
+func WeightedCost(stock, cost, qty, unitCost float64) float64 {
+	if stock <= 0 {
+		return math.Round(unitCost*100) / 100
+	}
+	return math.Round((stock*cost+qty*unitCost)/(stock+qty)*100) / 100
+}
+
+// ReceiveStock adds purchased units to stock, recalculates the product's cost
+// as a weighted average and records the receipt in the log. Past sales keep
+// the cost they were sold at.
+func (s *Storage) ReceiveStock(ctx context.Context, productID int64, qty, unitCost float64, userID int64) (models.StockReceipt, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return models.StockReceipt{}, err
+	}
+	defer tx.Rollback()
+
+	r := models.StockReceipt{ProductID: productID, Qty: qty, UnitCost: unitCost, UserID: userID}
+	if err := tx.QueryRowContext(ctx, `SELECT name, unit, stock, cost_price FROM products WHERE id = ?`, productID).
+		Scan(&r.ProductName, &r.Unit, &r.StockBefore, &r.CostBefore); err != nil {
+		return models.StockReceipt{}, err
+	}
+	r.CostAfter = WeightedCost(r.StockBefore, r.CostBefore, qty, unitCost)
+	if _, err := tx.ExecContext(ctx, `UPDATE products SET stock = stock + ?, cost_price = ? WHERE id = ?`, qty, r.CostAfter, productID); err != nil {
+		return models.StockReceipt{}, err
+	}
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO stock_receipts (product_id, product_name, unit, qty, unit_cost, stock_before, cost_before, cost_after, user_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		productID, r.ProductName, r.Unit, qty, unitCost, r.StockBefore, r.CostBefore, r.CostAfter, userID)
+	if err != nil {
+		return models.StockReceipt{}, err
+	}
+	if r.ID, err = res.LastInsertId(); err != nil {
+		return models.StockReceipt{}, err
+	}
+	r.CreatedAt = time.Now()
+	return r, tx.Commit()
+}
+
+// ListReceipts returns the receipts of a local calendar day, oldest first.
+func (s *Storage) ListReceipts(ctx context.Context, date time.Time) ([]models.StockReceipt, error) {
+	start, end := dayBounds(date)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.id, r.product_id, r.product_name, r.unit, r.qty, r.unit_cost, r.stock_before, r.cost_before, r.cost_after,
+r.user_id, COALESCE(u.full_name, ''), r.created_at
+FROM stock_receipts r
+LEFT JOIN users u ON u.user_id = r.user_id
+WHERE r.created_at >= ? AND r.created_at < ?
+ORDER BY r.created_at, r.id
+`, formatDBTime(start), formatDBTime(end))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var receipts []models.StockReceipt
+	for rows.Next() {
+		var r models.StockReceipt
+		var createdAt string
+		if err := rows.Scan(&r.ID, &r.ProductID, &r.ProductName, &r.Unit, &r.Qty, &r.UnitCost, &r.StockBefore, &r.CostBefore, &r.CostAfter,
+			&r.UserID, &r.UserName, &createdAt); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = parseDBTime(createdAt).In(time.Local)
+		receipts = append(receipts, r)
+	}
+	return receipts, rows.Err()
 }
 
 func (s *Storage) ListLowStockProducts(ctx context.Context, threshold float64) ([]models.Product, error) {
@@ -410,6 +491,61 @@ WHERE user_id = ? AND created_at >= ? AND created_at < ?
 
 func (s *Storage) GetDailyReport(ctx context.Context, date time.Time) (models.DailyReport, error) {
 	start, end := dayBounds(date)
+	return s.periodReport(ctx, start, end)
+}
+
+// GetMonthlyReport builds the report for the local calendar month of date.
+func (s *Storage) GetMonthlyReport(ctx context.Context, date time.Time) (models.MonthlyReport, error) {
+	start := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, time.Local)
+	end := start.AddDate(0, 1, 0)
+	report := models.MonthlyReport{Month: start}
+	summary, err := s.periodReport(ctx, start, end)
+	if err != nil {
+		return report, err
+	}
+	report.Summary = summary
+
+	rows, err := s.db.QueryContext(ctx, `SELECT created_at, total FROM sales WHERE created_at >= ? AND created_at < ? ORDER BY created_at`, formatDBTime(start), formatDBTime(end))
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var createdAt string
+		var total float64
+		if err := rows.Scan(&createdAt, &total); err != nil {
+			return report, err
+		}
+		local := parseDBTime(createdAt).In(time.Local)
+		day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+		if n := len(report.Days); n == 0 || !report.Days[n-1].Date.Equal(day) {
+			report.Days = append(report.Days, models.DayTotal{Date: day})
+		}
+		last := &report.Days[len(report.Days)-1]
+		last.Revenue += total
+		last.Checks++
+	}
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(qty * unit_cost), 0) FROM stock_receipts WHERE created_at >= ? AND created_at < ?`,
+		formatDBTime(start), formatDBTime(end)).Scan(&report.PurchaseTotal); err != nil {
+		return report, err
+	}
+	var first sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(created_at) FROM stock_receipts`).Scan(&first); err != nil {
+		return report, err
+	}
+	if first.Valid {
+		report.ReceiptsSince = parseDBTime(first.String).In(time.Local)
+	}
+	return report, nil
+}
+
+// periodReport sums sales in [start, end): totals by payment, cost, items,
+// voided checks and sellers. Date is set to start.
+func (s *Storage) periodReport(ctx context.Context, start, end time.Time) (models.DailyReport, error) {
 	report := models.DailyReport{Date: start}
 
 	row := s.db.QueryRowContext(ctx, `

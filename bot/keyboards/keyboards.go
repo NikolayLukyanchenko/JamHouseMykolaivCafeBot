@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/models"
+	"github.com/NikolayLukyanchenko/JamHouseMykolaivCafeBot/utils"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -40,7 +41,24 @@ func AdminPanel() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🧩 Набори для каси", "admin:bundles"),
 			tgbotapi.NewInlineKeyboardButtonData("🛒 Позиції для закупки", "admin:pitems"),
 		),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📥 Журнал приходів", "admin:rcpt")),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
+	)
+}
+
+// ReceiptCost asks for the purchase price and offers to keep the current cost.
+func ReceiptCost(currentCost float64) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("Ціна та сама (%.2f)", currentCost), "admin:rcv_same")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("❌ Скасувати", "nav:cancel")),
+	)
+}
+
+// ReceiptLogNav browses the receipt log day by day.
+func ReceiptLogNav(day, now time.Time) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		dayNavRow("admin:rcpt:", day, now),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("⬅️ До адмін-панелі", "admin:panel")),
 	)
 }
 
@@ -74,8 +92,31 @@ func ReportPeriods(now time.Time) tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("Вчора", "report:yesterday"),
 		),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📅 Інша дата", "report:cal:"+now.Format("2006-01"))),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📆 Цей місяць", "report:month:"+now.Format("2006-01")),
+			tgbotapi.NewInlineKeyboardButtonData("📆 Минулий місяць", "report:month:"+firstOfMonth(now).AddDate(0, -1, 0).Format("2006-01")),
+		),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("🏠 Головне меню", "nav:main")),
 	)
+}
+
+// MonthlyReportActions browses months and opens a calendar to pick a day.
+func MonthlyReportActions(month, now time.Time) tgbotapi.InlineKeyboardMarkup {
+	first := firstOfMonth(month)
+	prev := first.AddDate(0, -1, 0)
+	nav := []tgbotapi.InlineKeyboardButton{tgbotapi.NewInlineKeyboardButtonData("◀️ "+MonthTitle(prev), "report:mnav:"+prev.Format("2006-01"))}
+	if next := first.AddDate(0, 1, 0); next.Format("2006-01") <= now.Format("2006-01") {
+		nav = append(nav, tgbotapi.NewInlineKeyboardButtonData(MonthTitle(next)+" ▶️", "report:mnav:"+next.Format("2006-01")))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(
+		nav,
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("📅 Звіт за день цього місяця", "report:calnew:"+first.Format("2006-01"))),
+	)
+}
+
+// firstOfMonth avoids AddDate overflow (31 March - 1 month = 3 March).
+func firstOfMonth(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 }
 
 // dayNavRow is "◀️ 02.10 | Сьогодні | 04.10 ▶️" for browsing reports day by
@@ -109,11 +150,9 @@ func MySalesActions(day, now time.Time) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(dayNavRow("my:day:", day, now))
 }
 
-var monthNames = [...]string{"Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"}
-
 // MonthTitle renders e.g. "Жовтень 2026".
 func MonthTitle(month time.Time) string {
-	return fmt.Sprintf("%s %d", monthNames[month.Month()-1], month.Year())
+	return utils.MonthTitle(month)
 }
 
 // ReportCalendar renders a Monday-first month grid. Days with sales are

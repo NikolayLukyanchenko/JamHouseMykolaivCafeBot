@@ -22,6 +22,14 @@ func FormatDailyReport(report models.DailyReport) string {
 		return strings.TrimSpace(b.String())
 	}
 
+	writeTotals(&b, report)
+	writeBreakdown(&b, report)
+	return strings.TrimSpace(b.String())
+}
+
+// writeTotals writes revenue by payment, cost, profit with margin, checks and
+// voided checks.
+func writeTotals(b *strings.Builder, report models.DailyReport) {
 	b.WriteString(fmt.Sprintf("💰 Виручка: %s\n", utils.FormatMoney(report.TotalRevenue)))
 	b.WriteString(fmt.Sprintf("    💵 Готівка: %s\n", utils.FormatMoney(report.CashRevenue)))
 	b.WriteString(fmt.Sprintf("    💳 Карта: %s\n", utils.FormatMoney(report.CardRevenue)))
@@ -35,10 +43,13 @@ func FormatDailyReport(report models.DailyReport) string {
 	if report.VoidedChecks > 0 {
 		b.WriteString(voidedLine(report))
 	}
+}
 
+// writeBreakdown writes sold items by category and the per-seller summary.
+func writeBreakdown(b *strings.Builder, report models.DailyReport) {
 	b.WriteString("\n🛍 Продані товари\n")
 	b.WriteString("(кількість · виручка · собівартість · прибуток)\n")
-	writeItemsByCategory(&b, report.Items, true)
+	writeItemsByCategory(b, report.Items, true)
 
 	if len(report.Sellers) > 0 {
 		b.WriteString("\n👥 По продавцях\n")
@@ -50,7 +61,50 @@ func FormatDailyReport(report models.DailyReport) string {
 			b.WriteString(fmt.Sprintf("• %s — %s, чеків: %d (💵 %s / 💳 %s)\n", name, utils.FormatMoney(seller.Total), seller.Checks, utils.FormatMoney(seller.Cash), utils.FormatMoney(seller.Card)))
 		}
 	}
+}
+
+// FormatMonthlyReport renders the report for a calendar month.
+func FormatMonthlyReport(r models.MonthlyReport, now time.Time) string {
+	var b strings.Builder
+	title := utils.MonthTitle(r.Month)
+	if r.Month.Year() == now.Year() && r.Month.Month() == now.Month() {
+		title += fmt.Sprintf(" (поточний, по %s)", now.Format("02.01"))
+	}
+	b.WriteString(fmt.Sprintf("📆 Звіт за %s\n\n", title))
+	s := r.Summary
+	if s.Checks == 0 {
+		b.WriteString("Продажів за цей місяць немає.\n")
+		if s.VoidedChecks > 0 {
+			b.WriteString(voidedLine(s))
+		}
+	} else {
+		writeTotals(&b, s)
+		b.WriteString(fmt.Sprintf("📅 Днів з продажами: %d, середня виручка за день: %s\n", len(r.Days), utils.FormatMoney(s.TotalRevenue/float64(len(r.Days)))))
+	}
+	writePurchases(&b, r)
+	if s.Checks == 0 {
+		return strings.TrimSpace(b.String())
+	}
+
+	writeBreakdown(&b, s)
+
+	b.WriteString("\n📅 По днях\n")
+	for _, d := range r.Days {
+		b.WriteString(fmt.Sprintf("• %s %s — %s · чеків: %d\n", d.Date.Format("02.01"), utils.WeekdayShort(d.Date), utils.FormatMoney(d.Revenue), d.Checks))
+	}
 	return strings.TrimSpace(b.String())
+}
+
+func writePurchases(b *strings.Builder, r models.MonthlyReport) {
+	end := r.Month.AddDate(0, 1, 0)
+	switch {
+	case r.ReceiptsSince.IsZero() || !r.ReceiptsSince.Before(end):
+		b.WriteString("📥 Закупки: журнал приходів за цей місяць ще не вівся\n")
+	case r.ReceiptsSince.After(r.Month):
+		b.WriteString(fmt.Sprintf("📥 Закупки: %s (журнал приходів ведеться з %s)\n", utils.FormatMoney(r.PurchaseTotal), r.ReceiptsSince.Format("02.01.2006")))
+	default:
+		b.WriteString(fmt.Sprintf("📥 Закупки: %s (за журналом приходів)\n", utils.FormatMoney(r.PurchaseTotal)))
+	}
 }
 
 // DayLabel renders "сьогодні", "вчора" or the date.
@@ -164,4 +218,26 @@ func isKnownCategory(category string) bool {
 
 func voidedLine(report models.DailyReport) string {
 	return fmt.Sprintf("↩️ Скасовано чеків: %d на %s (не входять у виручку)\n", report.VoidedChecks, utils.FormatMoney(report.VoidedTotal))
+}
+
+// FormatReceipts renders the receipt log ("журнал приходів") for a day.
+func FormatReceipts(date, now time.Time, receipts []models.StockReceipt) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("📥 Журнал приходів за %s\n\n", DayLabel(date, now)))
+	if len(receipts) == 0 {
+		b.WriteString("Приходів за цей день немає.")
+		return b.String()
+	}
+	var total float64
+	for _, r := range receipts {
+		b.WriteString(fmt.Sprintf("🕐 %s · %s +%s %s по %s\n", r.CreatedAt.Format("15:04"), r.ProductName, utils.FormatQuantity(r.Qty), r.Unit, utils.FormatMoney(r.UnitCost)))
+		line := fmt.Sprintf("    собівартість %s → %s", utils.FormatMoney(r.CostBefore), utils.FormatMoney(r.CostAfter))
+		if r.UserName != "" {
+			line += " · " + r.UserName
+		}
+		b.WriteString(line + "\n")
+		total += r.Qty * r.UnitCost
+	}
+	b.WriteString(fmt.Sprintf("\n💸 Закуплено на: %s", utils.FormatMoney(total)))
+	return b.String()
 }

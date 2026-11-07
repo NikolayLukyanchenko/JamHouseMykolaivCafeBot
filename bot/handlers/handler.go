@@ -271,11 +271,22 @@ func (h *Handler) handleStateMessage(ctx context.Context, user models.User, mess
 		if err != nil {
 			return h.sendPrompt(message.Chat.ID, "Введіть коректну кількість для поповнення.")
 		}
-		h.sessions.ClearState(user.UserID)
-		if err := h.storage.IncreaseProductStock(ctx, s.EditingProductID, value); err != nil {
+		product, err := h.storage.GetProduct(ctx, s.EditingProductID)
+		if err != nil {
 			return err
 		}
-		return h.sendAdminProductCard(ctx, message.Chat.ID, s.EditingProductID, "Залишок поповнено.")
+		s.ReceiveQty = value
+		s.State = stateAwaitReceiveCost
+		markup := keyboards.ReceiptCost(product.CostPrice)
+		return h.sendText(message.Chat.ID, fmt.Sprintf("Ціна закупки «%s» за 1 %s? Зараз собівартість %s.", product.Name, product.Unit, utils.FormatMoney(product.CostPrice)), &markup)
+	case stateAwaitReceiveCost:
+		value, err := utils.ParsePositiveFloat(text)
+		if err != nil {
+			product, _ := h.storage.GetProduct(ctx, s.EditingProductID)
+			markup := keyboards.ReceiptCost(product.CostPrice)
+			return h.sendText(message.Chat.ID, "Введіть ціну закупки за 1 шт числом, наприклад 27 або 26,5.", &markup)
+		}
+		return h.receiveStock(ctx, message.Chat.ID, user, value)
 	default:
 		return errStateNotHandled
 	}
@@ -317,6 +328,18 @@ func (h *Handler) handleCallback(ctx context.Context, callback *tgbotapi.Callbac
 	case data == "admin:panel":
 		h.sessions.ClearState(user.UserID)
 		return h.sendAdminPanel(callback.Message.Chat.ID)
+	case data == "admin:rcv_same":
+		s := h.sessions.get(user.UserID)
+		if s.State != stateAwaitReceiveCost {
+			return h.sendAdminPanel(callback.Message.Chat.ID)
+		}
+		product, err := h.storage.GetProduct(ctx, s.EditingProductID)
+		if err != nil {
+			return err
+		}
+		return h.receiveStock(ctx, callback.Message.Chat.ID, user, product.CostPrice)
+	case data == "admin:rcpt", strings.HasPrefix(data, "admin:rcpt:"):
+		return h.sendReceiptLog(ctx, callback.Message.Chat.ID, callback.Message.MessageID, data)
 	case strings.HasPrefix(data, "admin:bundle"):
 		return h.handleBundleAdmin(ctx, user, callback)
 	case data == "admin:pitems", data == "admin:pchat_unbind", strings.HasPrefix(data, "admin:pitem"):

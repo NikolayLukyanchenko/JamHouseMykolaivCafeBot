@@ -95,3 +95,40 @@ func TestFormatDailyReportVoided(t *testing.T) {
 		t.Fatalf("voided checks missing on a day without sales:\n%s", empty)
 	}
 }
+
+func TestFormatMonthlyReport(t *testing.T) {
+	nov := time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local)
+	r := models.MonthlyReport{
+		Month: nov,
+		Summary: models.DailyReport{
+			Date: nov, CashRevenue: 140, CardRevenue: 280, TotalRevenue: 420, CostTotal: 180, Profit: 240, Checks: 3, VoidedChecks: 1, VoidedTotal: 70,
+			Items:   []models.DailyReportItem{{Name: "Лате", Category: models.CategoryDrinks, Unit: "чашка", Qty: 6, Revenue: 420, Cost: 180}},
+			Sellers: []models.SellerSummary{{UserID: 1, Name: "Ольга", Checks: 3, Cash: 140, Card: 280, Total: 420}},
+		},
+		Days: []models.DayTotal{
+			{Date: time.Date(2026, 11, 1, 0, 0, 0, 0, time.Local), Revenue: 210, Checks: 2},
+			{Date: time.Date(2026, 11, 15, 0, 0, 0, 0, time.Local), Revenue: 210, Checks: 1},
+		},
+		PurchaseTotal: 310,
+		ReceiptsSince: time.Date(2026, 11, 5, 9, 0, 0, 0, time.Local),
+	}
+	text := FormatMonthlyReport(r, time.Date(2026, 11, 20, 12, 0, 0, 0, time.Local))
+	t.Log("\n" + text)
+	for _, want := range []string{
+		"📆 Звіт за Листопад 2026 (поточний, по 20.11)",
+		"Виручка: 420.00 грн", "Прибуток: 240.00 грн (маржа 57%)", "Чеків: 3, середній чек: 140.00 грн",
+		"Скасовано чеків: 1", "Днів з продажами: 2, середня виручка за день: 210.00 грн",
+		"Закупки: 310.00 грн (журнал приходів ведеться з 05.11.2026)",
+		"• Лате — 6 чашка · 420.00 грн", "• Ольга — 420.00 грн, чеків: 3",
+		"• 01.11 Нд — 210.00 грн · чеків: 2", "• 15.11 Нд — 210.00 грн · чеків: 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("monthly report does not contain %q:\n%s", want, text)
+		}
+	}
+
+	oct := FormatMonthlyReport(models.MonthlyReport{Month: time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local), Summary: models.DailyReport{Date: time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local)}, ReceiptsSince: r.ReceiptsSince}, time.Date(2026, 11, 20, 0, 0, 0, 0, time.Local))
+	if !strings.Contains(oct, "📆 Звіт за Жовтень 2026\n") || !strings.Contains(oct, "Продажів за цей місяць немає") || !strings.Contains(oct, "журнал приходів за цей місяць ще не вівся") {
+		t.Fatalf("unexpected empty past month:\n%s", oct)
+	}
+}
